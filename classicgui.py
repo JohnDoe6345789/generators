@@ -2,12 +2,14 @@
 # -*- coding: utf-8 -*-
 """
 Codegen for a PyQt6 GUI that opens classic Windows Control Panels.
+Auto-installs Chocolatey if missing, handles UAC elevation, ensures Python 3.12,
+uninstalls older versions, and builds + tests + runs the GUI.
 Generates ./win-netpanel-launcher with:
   - app/main.py                (PyQt6 GUI)
   - assets/icon.svg            (window icon)
   - scripts/run_gui.bat/.sh    (launch GUI)
-  - scripts/run_setup.*        (setup, test, run)
-  - scripts/run_tests.*        (run unit tests)
+  - scripts/run_setup.ps1/.bat (bootstrap installer)
+  - scripts/run_tests.ps1/.bat (unit tests)
   - requirements.txt, README.md, tests/test_smoke.py
 """
 from __future__ import annotations
@@ -28,18 +30,16 @@ def _w(path: Path, text: str) -> None:
 
 # ----------------------------- File contents ------------------------------ #
 
-REQ = """PyQt6>=6.6,<7
-PyQt6-QtSvg>=6.6,<7
+REQUIREMENTS = """PyQt6>=6.6,<7
 """
 
 README = """# Win NetPanel Launcher
 
 PyQt6 app with a fancy dark/light GUI for opening classic Windows panels.
-Includes setup/test scripts for PowerShell, CMD, and Bash.
+Includes automatic setup (UAC + Chocolatey + Python 3.12).
 
 ```powershell
-scripts\run_setup.ps1   # full setup + run
-scripts\run_tests.ps1   # only tests
+scripts\run_setup.bat    # Full setup + run GUI (admin required)
 ```
 """
 
@@ -90,7 +90,7 @@ def make_button(text: str, callback: Callable[[], None]) -> QPushButton:
     button = QPushButton(text)
     button.setMinimumSize(QSize(260, 56))
     button.setCursor(Qt.CursorShape.PointingHandCursor)
-    shadow = QGraphicsDropShadowEffect();shadow.setBlurRadius(24);shadow.setOffset(0, 6)
+    shadow = QGraphicsDropShadowEffect(); shadow.setBlurRadius(24); shadow.setOffset(0, 6)
     button.setGraphicsEffect(shadow)
     button.clicked.connect(lambda: _safe_call(callback))
     return button
@@ -166,73 +166,91 @@ class TestSmoke(unittest.TestCase):
 if __name__ == '__main__': unittest.main()
 '''
 
+RUN_SETUP_PS1 = r"""$ErrorActionPreference = 'Stop'
+function Is-Admin {
+  $p=[Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+  return $p.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
+}
+if (-not (Is-Admin)) {
+  $argsList = @('-NoProfile','-ExecutionPolicy','Bypass','-File',"`"$PSCommandPath`"")
+  Start-Process -FilePath 'powershell' -Verb RunAs -ArgumentList $argsList
+  exit
+}
+if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
+  Set-ExecutionPolicy Bypass -Scope Process -Force
+  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+  Invoke-Expression ((New-Object Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+}
+$env:Path += ';C:\\ProgramData\\chocolatey\\bin'
+$pyVers = @('python310','python311','python313','python314')
+foreach ($p in $pyVers) { if (Get-Command $p -ErrorAction SilentlyContinue) { choco uninstall $p -y --no-progress 2>$null | Out-Null } }
+choco install python312 -y --no-progress
+if (Test-Path .venv) { Remove-Item -Recurse -Force .venv }
+py -3.12 -m venv .venv
+. .\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip wheel setuptools
+python -m pip install -r requirements.txt
+python -m unittest -q
+python app\main.py
+Read-Host 'Press Enter to exit'
+"""
+
 RUN_SETUP_BAT = r"""@echo off
 setlocal
 cd /d %~dp0..
-if not exist .venv (python -m venv .venv)
-call .venv\Scripts\activate.bat
-pip install -r requirements.txt
-python -m unittest -q
-python app\main.py
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0run_setup.ps1"
+pause
 """
 
 RUN_TESTS_BAT = r"""@echo off
 setlocal
 cd /d %~dp0..
-if not exist .venv (python -m venv .venv)
+if not exist .venv (py -3.12 -m venv .venv)
 call .venv\Scripts\activate.bat
-pip install -r requirements.txt
+python -m pip install --upgrade pip wheel setuptools
+python -m pip install -r requirements.txt
 python -m unittest -v
+pause
 """
 
-RUN_SETUP_PS1 = r"""$ErrorActionPreference = 'Stop'
+RUN_TESTS_PS1 = r"""$ErrorActionPreference='Stop'
 Set-Location -LiteralPath (Split-Path -Parent $MyInvocation.MyCommand.Path)\..
-if (-not (Test-Path .venv)) { python -m venv .venv }
+if (-not (Test-Path .venv)) { py -3.12 -m venv .venv }
 . .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-python -m unittest -q
+python -m pip install --upgrade pip wheel setuptools
+python -m pip install -r requirements.txt
+python -m unittest -v
+Read-Host 'Press Enter to exit'
+"""
+
+RUN_GUI_BAT = r"""@echo off
+setlocal
+cd /d %~dp0..
+if exist .venv (call .venv\Scripts\activate.bat) else (echo Run setup first & pause & exit /b 1)
 python app\main.py
+pause
 """
 
-RUN_TESTS_PS1 = r"""$ErrorActionPreference = 'Stop'
-Set-Location -LiteralPath (Split-Path -Parent $MyInvocation.MyCommand.Path)\..
-if (-not (Test-Path .venv)) { python -m venv .venv }
-. .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-python -m unittest -v
-"""
-
-RUN_SETUP_SH = """#!/usr/bin/env bash
+RUN_GUI_SH = """#!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-python3 -m venv .venv || true
+[ -d .venv ] || { echo 'Run setup first'; exit 1; }
 source .venv/bin/activate
-pip install -r requirements.txt
-python3 -m unittest -q
-exec python3 app/main.py
-"""
-
-RUN_TESTS_SH = """#!/usr/bin/env bash
-set -euo pipefail
-cd "$(dirname "$0")/.."
-python3 -m venv .venv || true
-source .venv/bin/activate
-pip install -r requirements.txt
-exec python3 -m unittest -v
+python3 app/main.py
 """
 
 def emit_all() -> None:
-    _w(_p('requirements.txt'), REQ)
+    _w(_p('requirements.txt'), REQUIREMENTS)
     _w(_p('README.md'), README)
     _w(_p('assets', 'icon.svg'), SVG_ICON)
     _w(_p('app', 'main.py'), MAIN_SCRIPT)
     _w(_p('tests', 'test_smoke.py'), TEST_SCRIPT)
-    _w(_p('scripts', 'run_setup.bat'), RUN_SETUP_BAT)
-    _w(_p('scripts', 'run_tests.bat'), RUN_TESTS_BAT)
     _w(_p('scripts', 'run_setup.ps1'), RUN_SETUP_PS1)
+    _w(_p('scripts', 'run_setup.bat'), RUN_SETUP_BAT)
     _w(_p('scripts', 'run_tests.ps1'), RUN_TESTS_PS1)
-    _w(_p('scripts', 'run_setup.sh'), RUN_SETUP_SH)
-    _w(_p('scripts', 'run_tests.sh'), RUN_TESTS_SH)
+    _w(_p('scripts', 'run_tests.bat'), RUN_TESTS_BAT)
+    _w(_p('scripts', 'run_gui.bat'), RUN_GUI_BAT)
+    _w(_p('scripts', 'run_gui.sh'), RUN_GUI_SH)
 
 
 def main() -> None:

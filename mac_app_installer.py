@@ -22,6 +22,7 @@ class AppSpec:
     label: str
     brew_name: str
     kind: str  # "formula" or "cask"
+    category: str
 
 
 @dataclass(frozen=True)
@@ -50,24 +51,34 @@ _PROGRESS_HINTS: Tuple[Tuple[str, float], ...] = (
 )
 
 
+def _apps_by_category(apps: Sequence[AppSpec]) -> dict[str, List[int]]:
+    """Return mapping of category name to list of indices within ``apps``."""
+
+    grouped: dict[str, List[int]] = {}
+    for idx, spec in enumerate(apps):
+        grouped.setdefault(spec.category, []).append(idx)
+    return grouped
+
+
 APP_LIST: List[AppSpec] = [
-    AppSpec("VLC", "vlc", "cask"),
-    AppSpec("Firefox", "firefox", "cask"),
-    AppSpec("Google Chrome", "google-chrome", "cask"),
-    AppSpec("Rectangle", "rectangle", "cask"),
-    AppSpec("Visual Studio Code", "visual-studio-code", "cask"),
-    AppSpec("iTerm2", "iterm2", "cask"),
-    AppSpec("Docker Desktop", "docker", "cask"),
-    AppSpec("Slack", "slack", "cask"),
-    AppSpec("Zoom", "zoom", "cask"),
-    AppSpec("Postman", "postman", "cask"),
-    AppSpec("Notion", "notion", "cask"),
-    AppSpec("htop", "htop", "formula"),
-    AppSpec("git", "git", "formula"),
-    AppSpec("Zsh Syntax Highlighting", "zsh-syntax-highlighting", "formula"),
-    AppSpec("AWS CLI", "awscli", "formula"),
-    AppSpec("Node.js", "node", "formula"),
-    AppSpec("Watchman", "watchman", "formula"),
+    AppSpec("Firefox", "firefox", "cask", "Browsers & Media"),
+    AppSpec("Google Chrome", "google-chrome", "cask", "Browsers & Media"),
+    AppSpec("VLC", "vlc", "cask", "Browsers & Media"),
+    AppSpec("Rectangle", "rectangle", "cask", "Desktop Enhancements"),
+    AppSpec("iTerm2", "iterm2", "cask", "Desktop Enhancements"),
+    AppSpec("Visual Studio Code", "visual-studio-code", "cask", "Development"),
+    AppSpec("Docker Desktop", "docker", "cask", "Development"),
+    AppSpec("Postman", "postman", "cask", "Development"),
+    AppSpec("Node.js", "node", "formula", "Development"),
+    AppSpec("Watchman", "watchman", "formula", "Development"),
+    AppSpec("htop", "htop", "formula", "CLI Utilities"),
+    AppSpec("git", "git", "formula", "CLI Utilities"),
+    AppSpec("Zsh Syntax Highlighting", "zsh-syntax-highlighting", "formula",
+            "CLI Utilities"),
+    AppSpec("AWS CLI", "awscli", "formula", "Operations & Cloud"),
+    AppSpec("Slack", "slack", "cask", "Collaboration"),
+    AppSpec("Zoom", "zoom", "cask", "Collaboration"),
+    AppSpec("Notion", "notion", "cask", "Productivity & Notes"),
 ]
 
 
@@ -344,11 +355,12 @@ class InstallerGUI:
         self.log_queue: "queue.Queue[InstallEvent]" = queue.Queue()
         self.active_thread: threading.Thread | None = None
         self.current_action: str | None = None
-        self.listbox: tk.Listbox
+        self.tree: ttk.Treeview
         self.install_button: ttk.Button
         self.uninstall_button: ttk.Button
         self.progress: ttk.Progressbar
         self.log_widget: tk.Text
+        self._tree_iids: dict[str, int] = {}
         self._build_layout()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(100, self._process_queue)
@@ -359,7 +371,7 @@ class InstallerGUI:
         self.root.mainloop()
 
     def _build_layout(self) -> None:
-        """Construct the header, listbox, and logging panes."""
+        """Construct the header, tree view, and logging panes."""
 
         style = ttk.Style(self.root)
         try:
@@ -476,26 +488,64 @@ class InstallerGUI:
         )
         list_frame.pack(side="left", fill="both", expand=True, padx=(0, 12))
 
-        self.listbox = tk.Listbox(
-            list_frame,
-            selectmode=tk.MULTIPLE,
-            height=18,
-            activestyle="dotbox",
+        style.configure(
+            "Treeview",
+            background="#161b28",
+            fieldbackground="#161b28",
+            foreground="#f6f7fb",
+            bordercolor="#1f2533",
+            rowheight=24,
             relief="flat",
-            bg="#161b28",
-            fg="#f6f7fb",
-            highlightbackground="#1f2533",
         )
-        for spec in self.apps:
-            self.listbox.insert(tk.END, spec.label)
-        sb = ttk.Scrollbar(
-            list_frame,
-            command=self.listbox.yview,
+        style.map(
+            "Treeview",
+            background=[("selected", "#263354")],
+            foreground=[("selected", "#ffffff")],
+        )
+        style.configure(
+            "Treeview.Heading",
+            background="#1b2132",
+            foreground="#f6f7fb",
+            relief="flat",
+        )
+
+        tree_container = tk.Frame(list_frame, bg="#10131a")
+        tree_container.pack(fill="both", expand=True)
+        self.tree = ttk.Treeview(
+            tree_container,
+            columns=("type",),
+            show="tree headings",
+            selectmode="extended",
+            height=18,
+        )
+        self.tree.heading("#0", text="Application")
+        self.tree.heading("type", text="Kind")
+        self.tree.column("#0", width=230, anchor="w")
+        self.tree.column("type", width=110, anchor="center")
+        tree_sb = ttk.Scrollbar(
+            tree_container,
+            command=self.tree.yview,
             style="Dark.Vertical.TScrollbar",
         )
-        self.listbox.config(yscrollcommand=sb.set)
-        self.listbox.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
+        self.tree.configure(yscrollcommand=tree_sb.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        tree_sb.pack(side="right", fill="y")
+
+        for category, indices in _apps_by_category(self.apps).items():
+            parent = self.tree.insert("", "end", text=category, open=True)
+            self.tree.item(parent, tags=("category",))
+            for idx in indices:
+                spec = self.apps[idx]
+                iid = f"app-{idx}"
+                self._tree_iids[iid] = idx
+                self.tree.insert(
+                    parent,
+                    "end",
+                    iid=iid,
+                    text=spec.label,
+                    values=(spec.kind.title(),),
+                )
+        self.tree.tag_configure("category", font=("Helvetica", 11, "bold"))
 
         console_frame = tk.LabelFrame(
             content,
@@ -587,7 +637,7 @@ class InstallerGUI:
     def _start_action(self, action: str) -> None:
         """Start install/uninstall workflow on a worker thread."""
 
-        selection = list(self.listbox.curselection())
+        selection = self._selected_indices()
         if not selection:
             messagebox.showinfo("No selection", "Select at least one app.")
             return
@@ -631,14 +681,26 @@ class InstallerGUI:
             )
         )
 
+    def _selected_indices(self) -> List[int]:
+        """Return the currently selected app indices from the tree view."""
+
+        indices: List[int] = []
+        for iid in self.tree.selection():
+            idx = self._tree_iids.get(iid)
+            if idx is not None:
+                indices.append(idx)
+        return indices
+
     def _toggle_inputs(self, *, enabled: bool) -> None:
         """Enable or disable the primary controls."""
 
-        list_state = tk.NORMAL if enabled else tk.DISABLED
         btn_state = "normal" if enabled else "disabled"
         self.install_button.configure(state=btn_state)
         self.uninstall_button.configure(state=btn_state)
-        self.listbox.config(state=list_state)
+        if enabled:
+            self.tree.state(("!disabled",))
+        else:
+            self.tree.state(("disabled",))
 
     def _append_log(self, message: str) -> None:
         """Append a single line to the log view."""

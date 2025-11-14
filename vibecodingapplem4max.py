@@ -28,6 +28,7 @@ import platform
 import shutil
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -254,12 +255,54 @@ def install_continue(
     log.put("[OK] Continue extension install attempted.\n")
 
 
-def pull_ollama_models(log: Queue[str]) -> None:
+def ensure_ollama_healthy(log: Queue[str]) -> bool:
     if not detect_ollama():
         log.put(
-            "[WARN] Ollama not detected. Skipping model download.\n"
+            "[WARN] Ollama CLI not found. Skipping Ollama service checks.\n"
         )
+        return False
+
+    for attempt in range(3):
+        proc = run_cmd(["pgrep", "-x", "ollama"], log, check=False)
+        if proc.returncode != 0:
+            log.put(
+                "[INFO] Ollama server not running. Attempting to start it...\n"
+            )
+            run_cmd([
+                "nohup",
+                "ollama",
+                "serve",
+            ], log, check=False)
+            time.sleep(2 + attempt * 2)
+
+        health = run_cmd(
+            [
+                "curl",
+                "-sSf",
+                "http://127.0.0.1:11434/api/tags",
+            ],
+            log,
+            check=False,
+        )
+        if health.returncode == 0:
+            log.put("[OK] Ollama service is healthy.\n")
+            return True
+
+        log.put(
+            f"[WARN] Ollama health check failed (attempt {attempt + 1}/3).\n"
+        )
+        time.sleep(2)
+
+    log.put(
+        "[ERROR] Ollama is installed but the service did not become healthy.\n"
+    )
+    return False
+
+
+def pull_ollama_models(log: Queue[str]) -> None:
+    if not ensure_ollama_healthy(log):
         return
+
     log.put("[INFO] Pulling qwen2.5-coder:14b...\n")
     run_cmd(
         ["ollama", "pull", "qwen2.5-coder:14b"],
@@ -380,6 +423,7 @@ class VibeSetupGUI:
         self.status_label: ttk.Label
         self.log_text: tk.Text
         self.start_button: ttk.Button
+        self.repair_button: ttk.Button
 
         self._build_ui()
         self._poll_log_queue()
@@ -450,6 +494,13 @@ class VibeSetupGUI:
         )
         self.start_button.pack(side=tk.LEFT)
 
+        self.repair_button = ttk.Button(
+            button_frame,
+            text="Repair Environment",
+            command=self.on_repair_clicked,
+        )
+        self.repair_button.pack(side=tk.LEFT, padx=(8, 0))
+
         quit_button = ttk.Button(
             button_frame,
             text="Quit",
@@ -473,6 +524,31 @@ class VibeSetupGUI:
         self.start_button.config(state=tk.DISABLED)
         self._append_log(
             "[INFO] Starting M4 Max vibe coding setup...\n"
+        )
+
+        thread = threading.Thread(
+            target=self._run_setup,
+            daemon=True,
+        )
+        thread.start()
+
+    def on_repair_clicked(self) -> None:
+        if self.running:
+            return
+        if not is_macos_arm():
+            messagebox.showerror(
+                "Unsupported system",
+                "This script is intended for macOS ARM (M1/M2/M3/M4).",
+            )
+            return
+        self.running = True
+        self.completed_steps = 0
+        self.progress["value"] = 0
+        self.status_label.config(text="Running repair...")
+        self.start_button.config(state=tk.DISABLED)
+        self.repair_button.config(state=tk.DISABLED)
+        self._append_log(
+            "[INFO] Starting environment repair (re-running all steps)...\n"
         )
 
         thread = threading.Thread(
@@ -550,6 +626,7 @@ class VibeSetupGUI:
                     text="Completed. You can close this window."
                 )
                 self.start_button.config(state=tk.NORMAL)
+                self.repair_button.config(state=tk.NORMAL)
                 messagebox.showinfo(
                     "Setup complete",
                     "Vibe coding setup finished.\n\n"
@@ -563,6 +640,7 @@ class VibeSetupGUI:
                     text="Setup failed. See log for details."
                 )
                 self.start_button.config(state=tk.NORMAL)
+                self.repair_button.config(state=tk.NORMAL)
             else:
                 self._append_log(msg)
         self.root.after(100, self._poll_log_queue)

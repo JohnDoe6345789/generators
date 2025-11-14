@@ -534,6 +534,8 @@ def get_templates():
           - `MainWindow.qml` (Qt Quick UI)
         - `scripts/`
           - Build, run, and dependency install helpers
+        - `welcome_launcher.py`
+          - Tkinter GUI that wraps the helper scripts
 
         ## Quick Start
 
@@ -563,6 +565,15 @@ def get_templates():
         .\scripts\build.bat
         .\scripts\run.bat
         ```
+
+        ### Welcome GUI
+
+        ```bash
+        python3 welcome_launcher.py  # use `python` on Windows
+        ```
+
+        The launcher shows install/build/run/test buttons and streams output
+        from the helper scripts inside the project.
 
         Backend priority is: HIP > Metal > CPU.
         """
@@ -1098,6 +1109,261 @@ def get_templates():
         """
     )
 
+    WELCOME_LAUNCHER = dedent(
+        '''#!/usr/bin/env python3
+        """Tkinter welcome launcher for the GPU compressor project."""
+
+        from __future__ import annotations
+
+        import os
+        import subprocess
+        import sys
+        import threading
+        from pathlib import Path
+        from typing import Sequence
+
+        import tkinter as tk
+        from tkinter import messagebox, ttk
+
+
+        PROJECT_ROOT = Path(__file__).resolve().parent
+
+
+        class WelcomeApp(tk.Tk):
+            """GUI wrapper around install/build/run/test helper scripts."""
+
+            def __init__(self, project_root: Path):
+                super().__init__()
+                self.project_root = project_root
+                self.title("GPU Compress Welcome Launcher")
+                self.geometry("640x420")
+
+                self.status_var = tk.StringVar(value="Idle")
+                self.path_var = tk.StringVar(value=str(project_root))
+                self.log_text: tk.Text | None = None
+                self._buttons: list[ttk.Button] = []
+                self._command_thread: threading.Thread | None = None
+
+                self._build_widgets()
+
+            def _build_widgets(self) -> None:
+                container = ttk.Frame(self)
+                container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+                ttk.Label(container, text="Project location:").pack(anchor=tk.W)
+                ttk.Label(
+                    container, textvariable=self.path_var, wraplength=600
+                ).pack(anchor=tk.W, pady=(0, 8))
+
+                ttk.Label(container, text="Actions:").pack(anchor=tk.W)
+                button_frame = ttk.Frame(container)
+                button_frame.pack(fill=tk.X, pady=(0, 10))
+
+                for text, handler in [
+                    ("Install Dependencies", self._on_install),
+                    ("Build Program", self._on_build),
+                    ("Run Program", self._on_run),
+                    ("Run Tests", self._on_test),
+                ]:
+                    btn = ttk.Button(button_frame, text=text, command=handler)
+                    btn.pack(fill=tk.X, pady=2)
+                    self._buttons.append(btn)
+
+                ttk.Label(container, text="Status:").pack(anchor=tk.W)
+                ttk.Label(container, textvariable=self.status_var).pack(
+                    anchor=tk.W, pady=(0, 8)
+                )
+
+                log_frame = ttk.Frame(container)
+                log_frame.pack(fill=tk.BOTH, expand=True)
+
+                self.log_text = tk.Text(log_frame, wrap=tk.NONE, height=10)
+                scrollbar = ttk.Scrollbar(
+                    log_frame, orient="vertical", command=self.log_text.yview
+                )
+                self.log_text.configure(yscrollcommand=scrollbar.set)
+                self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+                scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+            def _on_install(self) -> None:
+                self._run_action("Installing dependencies", self._install_command)
+
+            def _on_build(self) -> None:
+                self._run_action("Building program", self._build_command)
+
+            def _on_run(self) -> None:
+                self._run_action("Running program", self._run_command)
+
+            def _on_test(self) -> None:
+                self._run_action("Running tests", self._test_command)
+
+            def _run_action(
+                self,
+                description: str,
+                command_factory,
+            ) -> None:
+                if self._command_thread:
+                    messagebox.showinfo(
+                        "Command running",
+                        "Wait for the existing command to complete.",
+                    )
+                    return
+
+                command_info = command_factory()
+                if command_info is None:
+                    return
+                command, cwd = command_info
+
+                self.status_var.set(description)
+                self._set_buttons_state(False)
+
+                self._command_thread = threading.Thread(
+                    target=self._run_command_thread,
+                    args=(description, command, cwd),
+                    daemon=True,
+                )
+                self._command_thread.start()
+
+            def _run_command_thread(
+                self, description: str, command: Sequence[str], cwd: Path
+            ) -> None:
+                self._queue_log(f"=== {description} ===")
+                try:
+                    proc = subprocess.Popen(
+                        command,
+                        cwd=str(cwd),
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                    )
+                    assert proc.stdout is not None
+                    for line in proc.stdout:
+                        self._queue_log(line.rstrip())
+                    return_code = proc.wait()
+                    self._queue_log(f"[exit code {return_code}]")
+                except FileNotFoundError:
+                    self._queue_log(f"Command not found: {command[0]}")
+                except Exception as exc:
+                    self._queue_log(f"Command failed: {exc}")
+                finally:
+                    self.after(0, self._on_command_complete)
+
+            def _on_command_complete(self) -> None:
+                self._command_thread = None
+                self.status_var.set("Idle")
+                self._set_buttons_state(True)
+
+            def _queue_log(self, message: str) -> None:
+                self.after(0, self._append_log, message)
+
+            def _append_log(self, message: str) -> None:
+                if not self.log_text:
+                    return
+                self.log_text.insert(tk.END, message + "\n")
+                self.log_text.see(tk.END)
+
+            def _install_command(self) -> tuple[list[str], Path] | None:
+                scripts = self.project_root / "scripts"
+                if os.name == "nt":
+                    script = scripts / "install_deps.ps1"
+                    if not script.exists():
+                        messagebox.showerror(
+                            "Missing script",
+                            f"Could not find {script}.",
+                        )
+                        return None
+                    command = [
+                        "powershell",
+                        "-NoProfile",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-File",
+                        str(script),
+                    ]
+                    return command, self.project_root
+
+                script = scripts / "install_deps_mac.sh"
+                if sys.platform != "darwin" or not script.exists():
+                    script = scripts / "install_deps.sh"
+                if not script.exists():
+                    messagebox.showerror(
+                        "Missing script",
+                        "No install_deps script found.",
+                    )
+                    return None
+                return ["/bin/bash", str(script)], self.project_root
+
+            def _build_command(self) -> tuple[list[str], Path] | None:
+                scripts = self.project_root / "scripts"
+                if os.name == "nt":
+                    script = scripts / "build.bat"
+                    if not script.exists():
+                        messagebox.showerror(
+                            "Missing script",
+                            f"{script} not found.",
+                        )
+                        return None
+                    return ["cmd", "/c", str(script)], self.project_root
+
+                script = scripts / "build.sh"
+                if not script.exists():
+                    messagebox.showerror(
+                        "Missing script",
+                        f"{script} not found.",
+                    )
+                    return None
+                return ["/bin/bash", str(script)], self.project_root
+
+            def _run_command(self) -> tuple[list[str], Path] | None:
+                scripts = self.project_root / "scripts"
+                if os.name == "nt":
+                    script = scripts / "run.bat"
+                    if not script.exists():
+                        messagebox.showerror(
+                            "Missing script",
+                            f"{script} not found.",
+                        )
+                        return None
+                    return ["cmd", "/c", str(script)], self.project_root
+
+                script = scripts / "run.sh"
+                if not script.exists():
+                    messagebox.showerror(
+                        "Missing script",
+                        f"{script} not found.",
+                    )
+                    return None
+                return ["/bin/bash", str(script)], self.project_root
+
+            def _test_command(self) -> tuple[list[str], Path] | None:
+                build_dir = self.project_root / "build"
+                if not build_dir.exists():
+                    messagebox.showerror(
+                        "Build directory missing",
+                        f"{build_dir} not found. Run build first.",
+                    )
+                    return None
+                return ["ctest", "--output-on-failure"], build_dir
+
+            def _set_buttons_state(self, enabled: bool) -> None:
+                state = tk.NORMAL if enabled else tk.DISABLED
+                for btn in self._buttons:
+                    btn.configure(state=state)
+
+
+        def main() -> int:
+            """Entry point that creates the Tkinter event loop."""
+
+            app = WelcomeApp(PROJECT_ROOT)
+            app.mainloop()
+            return 0
+
+
+        if __name__ == "__main__":
+            raise SystemExit(main())
+        '''
+    )
+
     return {
         "CMakeLists.txt": CMAKELISTS_TOP,
         "src/CMakeLists.txt": CMAKELISTS_SRC,
@@ -1125,6 +1391,7 @@ def get_templates():
         "scripts/run.bat": SCRIPTS_RUN_BAT,
         "scripts/install_deps.ps1": SCRIPTS_INSTALL_WIN_PS1,
         "scripts/install_deps_mac.sh": SCRIPTS_INSTALL_MAC_SH,
+        "welcome_launcher.py": WELCOME_LAUNCHER,
     }
 
 

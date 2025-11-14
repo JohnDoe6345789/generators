@@ -54,6 +54,12 @@ class TemplateTests(unittest.TestCase):
         self.assertEqual(deltas[1], 0x0000000F)
         self.assertEqual(deltas[2], 0x00000006)
 
+    def test_welcome_launcher_template_is_present(self):
+        launcher = self.templates["welcome_launcher.py"]
+        self.assertIn("class WelcomeApp", launcher)
+        self.assertIn("ctest", launcher)
+        self.assertIn("install_deps", launcher)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -408,6 +408,72 @@ vibe() {{
     log.put("[OK] Added 'vibe' function to ~/.zshrc.\n")
 
 
+# Helper for environment status snapshot (non-mutating)
+def get_env_status_lines() -> list[str]:
+    lines: list[str] = []
+
+    if detect_homebrew():
+        lines.append("[OK] Homebrew: installed")
+    else:
+        lines.append("[MISSING] Homebrew: not installed")
+
+    if detect_ollama():
+        lines.append("[OK] Ollama CLI: installed")
+        try:
+            proc = subprocess.run(
+                ["pgrep", "-x", "ollama"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            if proc.returncode == 0:
+                lines.append("[OK] Ollama service: running")
+            else:
+                lines.append("[WARN] Ollama service: not running")
+        except Exception:
+            lines.append("[WARN] Ollama service: status unknown (pgrep failed)")
+    else:
+        lines.append("[MISSING] Ollama CLI: not installed")
+
+    if detect_vscode():
+        lines.append("[OK] VS Code: installed")
+    else:
+        lines.append("[MISSING] VS Code: not installed")
+
+    # Continue extension status
+    try:
+        tmp_log: Queue[str] = Queue()
+        if detect_continue_extension(tmp_log):
+            lines.append("[OK] Continue VS Code extension: installed")
+        else:
+            lines.append("[WARN] Continue VS Code extension: not detected")
+    except Exception:
+        lines.append(
+            "[WARN] Continue VS Code extension: status unknown (check failed)"
+        )
+
+    # 'vibe' alias status
+    home = Path.home()
+    zshrc = home / ".zshrc"
+    snippet_start = "# >>> vibe-coding setup >>>"
+    snippet_end = "# <<< vibe-coding setup <<<"
+    if zshrc.exists():
+        try:
+            content = zshrc.read_text(encoding="utf-8")
+            if snippet_start in content and snippet_end in content:
+                lines.append("[OK] 'vibe' shell function: configured in ~/.zshrc")
+            else:
+                lines.append("[WARN] 'vibe' shell function: not found in ~/.zshrc")
+        except Exception:
+            lines.append(
+                "[WARN] 'vibe' shell function: status unknown (could not read ~/.zshrc)"
+            )
+    else:
+        lines.append("[WARN] 'vibe' shell function: ~/.zshrc file does not exist")
+
+    return lines
+
+
 class VibeSetupGUI:
     def __init__(self) -> None:
         self.root: tk.Tk = tk.Tk()
@@ -424,9 +490,51 @@ class VibeSetupGUI:
         self.log_text: tk.Text
         self.start_button: ttk.Button
         self.repair_button: ttk.Button
+        self.status_button: ttk.Button
+
+        self.status_window: Optional[tk.Toplevel] = None
+        self.status_tree: Optional[ttk.Treeview] = None
 
         self._build_ui()
         self._poll_log_queue()
+
+    def _ensure_status_window(self) -> None:
+        if (
+            self.status_window is not None
+            and self.status_window.winfo_exists()
+        ):
+            if self.status_tree is not None:
+                for item in self.status_tree.get_children():
+                    self.status_tree.delete(item)
+            return
+
+        self.status_window = tk.Toplevel(self.root)
+        self.status_window.title("Environment Status")
+        self.status_window.geometry("520x260")
+        self.status_window.transient(self.root)
+
+        columns = ("component", "status")
+        tree = ttk.Treeview(
+            self.status_window,
+            columns=columns,
+            show="headings",
+            height=10,
+        )
+        tree.heading("component", text="Component")
+        tree.heading("status", text="Status")
+        tree.column("component", width=200, anchor="w")
+        tree.column("status", width=300, anchor="w")
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        scrollbar = ttk.Scrollbar(
+            self.status_window,
+            orient="vertical",
+            command=tree.yview,
+        )
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        tree.configure(yscrollcommand=scrollbar.set)
+
+        self.status_tree = tree
 
     def _build_ui(self) -> None:
         frame = ttk.Frame(self.root, padding=10)
@@ -501,6 +609,13 @@ class VibeSetupGUI:
         )
         self.repair_button.pack(side=tk.LEFT, padx=(8, 0))
 
+        self.status_button = ttk.Button(
+            button_frame,
+            text="Check Status",
+            command=self.on_status_clicked,
+        )
+        self.status_button.pack(side=tk.LEFT, padx=(8, 0))
+
         quit_button = ttk.Button(
             button_frame,
             text="Quit",
@@ -556,6 +671,29 @@ class VibeSetupGUI:
             daemon=True,
         )
         thread.start()
+
+    def on_status_clicked(self) -> None:
+        lines = get_env_status_lines()
+        self._ensure_status_window()
+        if self.status_tree is None:
+            return
+
+        for item in self.status_tree.get_children():
+            self.status_tree.delete(item)
+
+        for line in lines:
+            try:
+                _, rest = line.split("] ", 1)
+            except ValueError:
+                component = ""
+                status = line
+            else:
+                if ": " in rest:
+                    component, status = rest.split(": ", 1)
+                else:
+                    component = rest
+                    status = ""
+            self.status_tree.insert("", tk.END, values=(component, status))
 
     def _run_setup(self) -> None:
         try:

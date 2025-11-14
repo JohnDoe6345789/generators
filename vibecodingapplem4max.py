@@ -20,21 +20,21 @@ Run:
     python3 m4_vibe_setup.py
 """
 
+from __future__ import annotations
+
 import json
 import os
 import platform
-import queue
 import shutil
 import subprocess
 import threading
-import time
-import tkinter as tk
 from pathlib import Path
-from tkinter import messagebox, ttk
+from typing import Any, Callable, Optional
 
-# -------------------------
-# Utility helpers
-# -------------------------
+import tkinter as tk
+import tkinter.messagebox as messagebox
+import tkinter.ttk as ttk
+from queue import Empty, Queue
 
 
 def is_macos_arm() -> bool:
@@ -44,15 +44,15 @@ def is_macos_arm() -> bool:
     )
 
 
-def which(cmd: str) -> str | None:
+def which(cmd: str) -> Optional[str]:
     return shutil.which(cmd)
 
 
 def run_cmd(
     cmd: list[str],
-    log: queue.Queue,
+    log: Queue[str],
     check: bool = False,
-) -> subprocess.CompletedProcess:
+) -> subprocess.CompletedProcess[str]:
     try:
         proc = subprocess.run(
             cmd,
@@ -73,18 +73,16 @@ def run_cmd(
         log.put(f"[ERROR] {cmd}: {exc}\n")
         if check:
             raise
-        return subprocess.CompletedProcess(cmd, 1)
+        return subprocess.CompletedProcess(
+            cmd, 1, "", f"{exc}"
+        )
 
 
 def run_with_privileges(
     shell_cmd: str,
-    log: queue.Queue,
+    log: Queue[str],
     check: bool = False,
 ) -> None:
-    """
-    Use AppleScript to run a shell command with admin privileges.
-    This will prompt the user for their macOS password.
-    """
     osa_script = (
         f'do shell script "{shell_cmd.replace(\'"\', \'\\\\\"\')}" '
         "with administrator privileges"
@@ -110,13 +108,8 @@ def run_with_privileges(
             raise
 
 
-# -------------------------
-# Detection helpers
-# -------------------------
-
-
 def detect_homebrew() -> bool:
-    if which("brew"):
+    if which("brew") is not None:
         return True
     if Path("/opt/homebrew/bin/brew").exists():
         return True
@@ -128,7 +121,7 @@ def detect_ollama() -> bool:
 
 
 def detect_vscode() -> bool:
-    if which("code"):
+    if which("code") is not None:
         return True
     if Path("/Applications/Visual Studio Code.app").exists():
         return True
@@ -136,10 +129,10 @@ def detect_vscode() -> bool:
 
 
 def detect_continue_extension(
-    log: queue.Queue,
+    log: Queue[str],
 ) -> bool:
     code_path = which("code")
-    if not code_path:
+    if code_path is None:
         log.put(
             "[WARN] VS Code CLI 'code' not found. "
             "Skipping precise Continue detection.\n"
@@ -162,44 +155,37 @@ def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-# -------------------------
-# Installation steps
-# -------------------------
-
-
-def install_homebrew(log: queue.Queue) -> None:
+def install_homebrew(log: Queue[str]) -> None:
     if detect_homebrew():
         log.put("[OK] Homebrew already installed (fuzzy detected).\n")
         return
-
     log.put("[INFO] Installing Homebrew...\n")
     cmd = (
         '/bin/bash -c '
         '"$(curl -fsSL https://raw.githubusercontent.com/'
         'Homebrew/install/HEAD/install.sh)"'
     )
-    # Homebrew installer itself will prompt, but we wrap via AppleScript
     run_with_privileges(cmd, log, check=True)
-    log.put("[OK] Homebrew installation attempted. "
-            "You may need to restart Terminal.\n")
+    log.put(
+        "[OK] Homebrew installation attempted. "
+        "You may need to restart Terminal.\n"
+    )
 
 
-def install_ollama(log: queue.Queue) -> None:
+def install_ollama(log: Queue[str]) -> None:
     if detect_ollama():
         log.put("[OK] Ollama already installed (fuzzy detected).\n")
         return
-
     log.put("[INFO] Installing Ollama...\n")
     cmd = "curl -fsSL https://ollama.com/install.sh | sh"
     run_with_privileges(cmd, log, check=True)
     log.put("[OK] Ollama install script executed.\n")
 
 
-def install_vscode(log: queue.Queue) -> None:
+def install_vscode(log: Queue[str]) -> None:
     if detect_vscode():
         log.put("[OK] VS Code already installed (fuzzy detected).\n")
         return
-
     log.put("[INFO] Installing VS Code via Homebrew cask...\n")
     if not detect_homebrew():
         log.put(
@@ -221,15 +207,14 @@ def install_vscode(log: queue.Queue) -> None:
 
 
 def install_continue(
-    log: queue.Queue,
+    log: Queue[str],
 ) -> None:
     if detect_continue_extension(log):
         log.put("[OK] Continue extension already installed.\n")
         return
-
     log.put("[INFO] Installing Continue VS Code extension...\n")
     code_path = which("code")
-    if not code_path:
+    if code_path is None:
         log.put(
             "[WARN] Cannot find 'code' CLI. "
             "You may need to enable it from VS Code "
@@ -237,7 +222,6 @@ def install_continue(
             "Install 'code' command in PATH').\n"
         )
         return
-
     run_cmd(
         [code_path, "--install-extension", "Continue.continue"],
         log,
@@ -246,39 +230,36 @@ def install_continue(
     log.put("[OK] Continue extension install attempted.\n")
 
 
-def pull_ollama_models(log: queue.Queue) -> None:
+def pull_ollama_models(log: Queue[str]) -> None:
     if not detect_ollama():
         log.put(
             "[WARN] Ollama not detected. Skipping model download.\n"
         )
         return
-
     log.put("[INFO] Pulling qwen2.5-coder:14b...\n")
     run_cmd(
         ["ollama", "pull", "qwen2.5-coder:14b"],
         log,
         check=False,
     )
-
     log.put("[INFO] Pulling deepseek-r1:14b...\n")
     run_cmd(
         ["ollama", "pull", "deepseek-r1:14b"],
         log,
         check=False,
     )
-
     log.put("[OK] Model pulls attempted.\n")
 
 
 def configure_continue(
-    log: queue.Queue,
+    log: Queue[str],
 ) -> None:
     home = Path.home()
     cfg_dir = home / ".continue"
     ensure_dir(cfg_dir)
     cfg_file = cfg_dir / "config.json"
 
-    base = {
+    base: dict[str, Any] = {
         "models": [
             {
                 "title": "Qwen Coder 14B (local)",
@@ -297,12 +278,12 @@ def configure_continue(
         "defaultModel": "Qwen Coder 14B (local)",
     }
 
+    cfg_data: dict[str, Any]
     if cfg_file.exists():
         try:
-            current = json.loads(cfg_file.read_text())
+            current = json.loads(cfg_file.read_text(encoding="utf-8"))
         except Exception:
             current = {}
-        # Merge fuzzy: keep any user keys, overwrite models we care about
         current["models"] = base["models"]
         current["tabAutocompleteModel"] = base["tabAutocompleteModel"]
         current["defaultModel"] = base["defaultModel"]
@@ -318,18 +299,13 @@ def configure_continue(
             "local Ollama models.\n"
         )
 
-    cfg_file.write_text(json.dumps(cfg_data, indent=2))
+    cfg_file.write_text(
+        json.dumps(cfg_data, indent=2), encoding="utf-8"
+    )
     log.put(f"[OK] Continue config written to {cfg_file}.\n")
 
 
-def configure_vibe_alias(log: queue.Queue) -> None:
-    """
-    Add a handy 'vibe' function to ~/.zshrc if it doesn't already exist.
-
-    The function:
-      - starts ollama serve in background
-      - launches VS Code in the current directory
-    """
+def configure_vibe_alias(log: Queue[str]) -> None:
     home = Path.home()
     zshrc = home / ".zshrc"
     snippet_start = "# >>> vibe-coding setup >>>"
@@ -338,13 +314,11 @@ def configure_vibe_alias(log: queue.Queue) -> None:
     vibe_block = f"""
 {snippet_start}
 vibe() {{
-    # Start Ollama server in background if not running
     if ! pgrep -x "ollama" >/dev/null 2>&1; then
         nohup ollama serve >/tmp/ollama_serve.log 2>&1 &
         echo "Starting Ollama server..." >&2
         sleep 2
     fi
-    # Launch VS Code in current directory
     if command -v code >/dev/null 2>&1; then
         code "$PWD"
     else
@@ -355,33 +329,33 @@ vibe() {{
 """
 
     if zshrc.exists():
-        content = zshrc.read_text()
+        content = zshrc.read_text(encoding="utf-8")
         if snippet_start in content and snippet_end in content:
             log.put("[OK] 'vibe' function already present in ~/.zshrc.\n")
             return
-        content += "\n" + vibe_block + "\n"
-        zshrc.write_text(content)
+        new_content = content + "\n" + vibe_block + "\n"
+        zshrc.write_text(new_content, encoding="utf-8")
     else:
-        zshrc.write_text(vibe_block + "\n")
+        zshrc.write_text(vibe_block + "\n", encoding="utf-8")
 
     log.put("[OK] Added 'vibe' function to ~/.zshrc.\n")
 
 
-# -------------------------
-# GUI / Orchestration
-# -------------------------
-
-
 class VibeSetupGUI:
     def __init__(self) -> None:
-        self.root = tk.Tk()
+        self.root: tk.Tk = tk.Tk()
         self.root.title("M4 Max Vibe Coding Setup")
         self.root.geometry("720x480")
 
-        self.log_queue: queue.Queue[str] = queue.Queue()
-        self.total_steps = 7
-        self.completed_steps = 0
-        self.running = False
+        self.log_queue: Queue[str] = Queue()
+        self.total_steps: int = 7
+        self.completed_steps: int = 0
+        self.running: bool = False
+
+        self.progress: ttk.Progressbar
+        self.status_label: ttk.Label
+        self.log_text: tk.Text
+        self.start_button: ttk.Button
 
         self._build_ui()
         self._poll_log_queue()
@@ -516,7 +490,7 @@ class VibeSetupGUI:
     def _run_step(
         self,
         status_text: str,
-        func,
+        func: Callable[[Queue[str]], None],
     ) -> None:
         self.log_queue.put(f"[STEP] {status_text}\n")
         self.log_queue.put(f"--- {status_text}\n")
@@ -530,8 +504,10 @@ class VibeSetupGUI:
         )
         self.progress["value"] = pct
         self.status_label.config(
-            text=f"Progress: {pct}% ({self.completed_steps}/"
-                 f"{self.total_steps} steps)"
+            text=(
+                f"Progress: {pct}% "
+                f"({self.completed_steps}/{self.total_steps} steps)"
+            )
         )
 
     def _append_log(self, text: str) -> None:
@@ -539,32 +515,32 @@ class VibeSetupGUI:
         self.log_text.see(tk.END)
 
     def _poll_log_queue(self) -> None:
-        try:
-            while True:
+        while True:
+            try:
                 msg = self.log_queue.get_nowait()
-                if msg == "__SETUP_DONE__":
-                    self.running = False
-                    self.status_label.config(
-                        text="Completed. You can close this window."
-                    )
-                    self.start_button.config(state=tk.NORMAL)
-                    messagebox.showinfo(
-                        "Setup complete",
-                        "Vibe coding setup finished.\n\n"
-                        "Open a new terminal and run:\n\n"
-                        "    vibe\n\n"
-                        "inside a project directory.",
-                    )
-                elif msg == "__SETUP_FAILED__":
-                    self.running = False
-                    self.status_label.config(
-                        text="Setup failed. See log for details."
-                    )
-                    self.start_button.config(state=tk.NORMAL)
-                else:
-                    self._append_log(msg)
-        except queue.Empty:
-            pass
+            except Empty:
+                break
+            if msg == "__SETUP_DONE__":
+                self.running = False
+                self.status_label.config(
+                    text="Completed. You can close this window."
+                )
+                self.start_button.config(state=tk.NORMAL)
+                messagebox.showinfo(
+                    "Setup complete",
+                    "Vibe coding setup finished.\n\n"
+                    "Open a new terminal and run:\n\n"
+                    "    vibe\n\n"
+                    "inside a project directory.",
+                )
+            elif msg == "__SETUP_FAILED__":
+                self.running = False
+                self.status_label.config(
+                    text="Setup failed. See log for details."
+                )
+                self.start_button.config(state=tk.NORMAL)
+            else:
+                self._append_log(msg)
         self.root.after(100, self._poll_log_queue)
 
     def run(self) -> None:

@@ -11,8 +11,8 @@ Features:
     * VS Code (via Homebrew cask)
     * Continue.dev VS Code extension
 - Configures Continue to use local Ollama models:
-    * qwen2.5-coder:14b
-    * deepseek-r1:14b
+    * qwen2.5-coder:1.5b
+    * qwen2.5-coder:7b
 - Adds a 'vibe' shell function to ~/.zshrc for quick startup
 - Uses AppleScript to request privilege elevation where needed
 
@@ -34,6 +34,7 @@ from typing import Any, Callable, Optional
 
 import tkinter as tk
 import tkinter.messagebox as messagebox
+import tkinter.simpledialog as simpledialog
 import tkinter.ttk as ttk
 from queue import Empty, Queue
 
@@ -255,6 +256,37 @@ def install_continue(
     log.put("[OK] Continue extension install attempted.\n")
 
 
+# List installed Ollama models via the CLI
+def list_ollama_models() -> list[dict[str, str]]:
+    if not detect_ollama():
+        return []
+    try:
+        proc = subprocess.run(
+            ["ollama", "list"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except Exception:
+        return []
+    if proc.returncode != 0 or not proc.stdout:
+        return []
+
+    lines = proc.stdout.splitlines()
+    if not lines:
+        return []
+
+    models: list[dict[str, str]] = []
+    for line in lines[1:]:
+        parts = line.split()
+        if not parts:
+            continue
+        name = parts[0]
+        size = "".join(parts[-2:]) if len(parts) >= 2 else ""
+        models.append({"name": name, "size": size})
+    return models
+
+
 def ensure_ollama_healthy(log: Queue[str]) -> bool:
     if not detect_ollama():
         log.put(
@@ -303,15 +335,15 @@ def pull_ollama_models(log: Queue[str]) -> None:
     if not ensure_ollama_healthy(log):
         return
 
-    log.put("[INFO] Pulling qwen2.5-coder:14b...\n")
+    log.put("[INFO] Pulling qwen2.5-coder:1.5b...\n")
     run_cmd(
-        ["ollama", "pull", "qwen2.5-coder:14b"],
+        ["ollama", "pull", "qwen2.5-coder:1.5b"],
         log,
         check=False,
     )
-    log.put("[INFO] Pulling deepseek-r1:14b...\n")
+    log.put("[INFO] Pulling qwen2.5-coder:7b...\n")
     run_cmd(
-        ["ollama", "pull", "deepseek-r1:14b"],
+        ["ollama", "pull", "qwen2.5-coder:7b"],
         log,
         check=False,
     )
@@ -326,23 +358,48 @@ def configure_continue(
     ensure_dir(cfg_dir)
     cfg_file = cfg_dir / "config.json"
 
+    models: list[dict[str, Any]] = [
+        {
+            "title": "QwenCoder2.5 1.5B (local)",
+            "provider": "ollama",
+            "model": "qwen2.5-coder:1.5b",
+            "apiBase": "http://localhost:11434",
+        },
+        {
+            "title": "QwenCoder2.5 7B (local)",
+            "provider": "ollama",
+            "model": "qwen2.5-coder:7b",
+            "apiBase": "http://localhost:11434",
+        },
+    ]
+
+    mercury_key = os.environ.get("MERCURY_API_KEY")
+    if mercury_key:
+        models.append(
+            {
+                "title": "Mercury Coder",
+                "provider": "mercury",
+                "model": "mercury-coder",
+                "apiKey": mercury_key,
+            }
+        )
+
+    mistral_key = os.environ.get("MISTRAL_API_KEY")
+    if mistral_key:
+        models.append(
+            {
+                "title": "Codestral",
+                "provider": "mistral",
+                "model": "codestral-latest",
+                "apiKey": mistral_key,
+            }
+        )
+
     base: dict[str, Any] = {
-        "models": [
-            {
-                "title": "Qwen Coder 14B (local)",
-                "provider": "ollama",
-                "model": "qwen2.5-coder:14b",
-                "apiBase": "http://localhost:11434",
-            },
-            {
-                "title": "DeepSeek R1 14B (local)",
-                "provider": "ollama",
-                "model": "deepseek-r1:14b",
-                "apiBase": "http://localhost:11434",
-            },
-        ],
-        "tabAutocompleteModel": "Qwen Coder 14B (local)",
-        "defaultModel": "Qwen Coder 14B (local)",
+        "models": models,
+        "autocompleteModel": "QwenCoder2.5 1.5B (local)",
+        "tabAutocompleteModel": "QwenCoder2.5 1.5B (local)",
+        "defaultModel": "QwenCoder2.5 7B (local)",
     }
 
     cfg_data: dict[str, Any]
@@ -352,6 +409,7 @@ def configure_continue(
         except Exception:
             current = {}
         current["models"] = base["models"]
+        current["autocompleteModel"] = base["autocompleteModel"]
         current["tabAutocompleteModel"] = base["tabAutocompleteModel"]
         current["defaultModel"] = base["defaultModel"]
         cfg_data = current
@@ -491,9 +549,13 @@ class VibeSetupGUI:
         self.start_button: ttk.Button
         self.repair_button: ttk.Button
         self.status_button: ttk.Button
+        self.models_button: ttk.Button
 
         self.status_window: Optional[tk.Toplevel] = None
         self.status_tree: Optional[ttk.Treeview] = None
+        self.models_window: Optional[tk.Toplevel] = None
+        self.models_tree: Optional[ttk.Treeview] = None
+        self.models_status: Optional[ttk.Label] = None
 
         self._build_ui()
         self._poll_log_queue()
@@ -535,6 +597,226 @@ class VibeSetupGUI:
         tree.configure(yscrollcommand=scrollbar.set)
 
         self.status_tree = tree
+
+    def _ensure_models_window(self) -> None:
+        if (
+            self.models_window is not None
+            and self.models_window.winfo_exists()
+        ):
+            if self.models_tree is not None:
+                for item in self.models_tree.get_children():
+                    self.models_tree.delete(item)
+            self._set_models_status("")
+            return
+
+        self.models_window = tk.Toplevel(self.root)
+        self.models_window.title("Manage Ollama Models")
+        self.models_window.geometry("600x320")
+        self.models_window.transient(self.root)
+
+        container = ttk.Frame(self.models_window, padding=8)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        columns = ("name", "size")
+        tree = ttk.Treeview(
+            container,
+            columns=columns,
+            show="headings",
+            height=10,
+        )
+        tree.heading("name", text="Model")
+        tree.heading("size", text="Size")
+        tree.column("name", width=360, anchor="w")
+        tree.column("size", width=120, anchor="w")
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        scrollbar = ttk.Scrollbar(
+            container,
+            orient="vertical",
+            command=tree.yview,
+        )
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        tree.configure(yscrollcommand=scrollbar.set)
+
+        button_frame = ttk.Frame(self.models_window)
+        button_frame.pack(fill=tk.X, pady=(8, 0))
+
+        refresh_btn = ttk.Button(
+            button_frame,
+            text="Refresh",
+            command=self.refresh_models_view,
+        )
+        refresh_btn.pack(side=tk.LEFT)
+
+        pull_btn = ttk.Button(
+            button_frame,
+            text="Pull Model...",
+            command=lambda: self._run_model_pull(prompt=True),
+        )
+        pull_btn.pack(side=tk.LEFT, padx=(8, 0))
+
+        delete_btn = ttk.Button(
+            button_frame,
+            text="Delete Selected",
+            command=self._run_model_delete,
+        )
+        delete_btn.pack(side=tk.LEFT, padx=(8, 0))
+
+        close_btn = ttk.Button(
+            button_frame,
+            text="Close",
+            command=self.models_window.destroy,
+        )
+        close_btn.pack(side=tk.RIGHT)
+
+        status = ttk.Label(
+            self.models_window,
+            text="",
+            anchor="w",
+        )
+        status.pack(fill=tk.X, pady=(4, 0))
+
+        self.models_tree = tree
+        self.models_status = status
+
+    def refresh_models_view(self) -> None:
+        if self.models_tree is None:
+            return
+
+        for item in self.models_tree.get_children():
+            self.models_tree.delete(item)
+
+        models = list_ollama_models()
+        if not models:
+            self.models_tree.insert(
+                "",
+                tk.END,
+                values=("No models found", ""),
+            )
+            self._set_models_status("No models reported by Ollama.")
+            return
+
+        for m in models:
+            self.models_tree.insert(
+                "",
+                tk.END,
+                values=(m.get("name", ""), m.get("size", "")),
+            )
+        self._set_models_status(f"Found {len(models)} model(s).")
+
+    def on_models_clicked(self) -> None:
+        if not detect_ollama():
+            messagebox.showwarning(
+                "Ollama not found",
+                (
+                    "Ollama CLI is not installed or not on PATH.\n"
+                    "Install Ollama first, then try again."
+                ),
+            )
+            return
+        self._ensure_models_window()
+        self.refresh_models_view()
+
+    def _set_models_status(self, text: str) -> None:
+        if self.models_status is not None:
+            self.models_status.config(text=text)
+
+    def _run_model_pull(self, prompt: bool = False) -> None:
+        def worker(name: str) -> None:
+            try:
+                proc = subprocess.run(
+                    ["ollama", "pull", name],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                if proc.returncode == 0:
+                    msg = f"Pulled model '{name}'."
+                else:
+                    err = proc.stderr.strip() or proc.stdout.strip()
+                    msg = f"Failed to pull '{name}': {err}" if err else (
+                        f"Failed to pull '{name}'."
+                    )
+            except Exception as exc:  # pragma: no cover - OS errors
+                msg = f"Error pulling '{name}': {exc}"
+
+            def done() -> None:
+                self._set_models_status(msg)
+                self.refresh_models_view()
+                self._append_log(msg + "\n")
+
+            self.root.after(0, done)
+
+        if prompt:
+            name = simpledialog.askstring(
+                "Pull Model",
+                (
+                    "Enter Ollama model name, for example:\n"
+                    "qwen2.5-coder:1.5b or qwen2.5-coder:7b"
+                ),
+                parent=self.models_window,
+            )
+            if not name:
+                return
+        else:
+            name = "qwen2.5-coder:1.5b"
+
+        self._set_models_status(f"Pulling '{name}'...")
+        threading.Thread(target=worker, args=(name,), daemon=True).start()
+
+    def _run_model_delete(self) -> None:
+        if self.models_tree is None:
+            return
+        selection = self.models_tree.selection()
+        if not selection:
+            messagebox.showinfo(
+                "No selection",
+                "Select a model to delete first.",
+            )
+            return
+        item_id = selection[0]
+        values = self.models_tree.item(item_id, "values")
+        if not values:
+            return
+        name = values[0]
+        if not name or name == "No models found":
+            return
+
+        confirm = messagebox.askyesno(
+            "Delete model",
+            f"Are you sure you want to delete '{name}'?",
+            parent=self.models_window,
+        )
+        if not confirm:
+            return
+
+        def worker() -> None:
+            try:
+                proc = subprocess.run(
+                    ["ollama", "rm", name],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                if proc.returncode == 0:
+                    msg = f"Deleted model '{name}'."
+                else:
+                    err = proc.stderr.strip() or proc.stdout.strip()
+                    msg = f"Failed to delete '{name}': {err}" if err else (
+                        f"Failed to delete '{name}'."
+                    )
+            except Exception as exc:  # pragma: no cover
+                msg = f"Error deleting '{name}': {exc}"
+
+            def done() -> None:
+                self._set_models_status(msg)
+                self.refresh_models_view()
+                self._append_log(msg + "\n")
+
+            self.root.after(0, done)
+
+        self._set_models_status(f"Deleting '{name}'...")
+        threading.Thread(target=worker, daemon=True).start()
 
     def _build_ui(self) -> None:
         frame = ttk.Frame(self.root, padding=10)
@@ -615,6 +897,13 @@ class VibeSetupGUI:
             command=self.on_status_clicked,
         )
         self.status_button.pack(side=tk.LEFT, padx=(8, 0))
+
+        self.models_button = ttk.Button(
+            button_frame,
+            text="Manage Models",
+            command=self.on_models_clicked,
+        )
+        self.models_button.pack(side=tk.LEFT, padx=(8, 0))
 
         quit_button = ttk.Button(
             button_frame,

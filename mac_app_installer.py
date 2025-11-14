@@ -12,7 +12,7 @@ from shutil import which
 from typing import Callable, Iterable, List, Sequence, Tuple
 
 import tkinter as tk
-from tkinter import messagebox, scrolledtext, ttk
+from tkinter import messagebox, ttk
 
 
 @dataclass(frozen=True)
@@ -34,9 +34,20 @@ class InstallEvent:
     total: int = 0
     succeeded: int = 0
     failed: int = 0
+    operation: str = ""
 
 
 Reporter = Callable[[InstallEvent], None]
+
+_PROGRESS_HINTS: Tuple[Tuple[str, float], ...] = (
+    ("downloading", 0.3),
+    ("fetching", 0.3),
+    ("pouring", 0.55),
+    ("installing", 0.7),
+    ("linking", 0.85),
+    ("cleanup", 0.92),
+    ("finishing", 0.95),
+)
 
 
 APP_LIST: List[AppSpec] = [
@@ -86,6 +97,35 @@ def _run_brew(args: Sequence[str]) -> Tuple[bool, str]:
     return success, output
 
 
+def _stream_brew(args: Sequence[str],
+                 line_callback: Callable[[str], None] | None = None) -> bool:
+    """Run brew while streaming output to ``line_callback``."""
+
+    if not _have_cmd("brew"):
+        if line_callback:
+            line_callback("Homebrew is not available on PATH.")
+        return False
+    cmd = ["brew", *args]
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+    except OSError as exc:  # pragma: no cover - system dependent
+        if line_callback:
+            line_callback(f"Failed to run brew: {exc}")
+        return False
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        if line_callback and line:
+            line_callback(line.rstrip())
+    proc.wait()
+    return proc.returncode == 0
+
+
 def _installed_sets() -> Tuple[set, set]:
     """Return sets of installed formulas and casks."""
 
@@ -100,10 +140,24 @@ def _installed_sets() -> Tuple[set, set]:
     return formulas, casks
 
 
-def install_selected(apps: Sequence[AppSpec],
-                     indices: Iterable[int],
-                     reporter: Reporter | None = None) -> Tuple[int, int]:
-    """Install the selected apps, emitting progress events when requested."""
+def _detail_progress(current: float, line: str) -> float:
+    """Heuristically advance in-progress value based on brew output."""
+
+    if not line:
+        return current
+    lowered = line.lower()
+    for token, threshold in _PROGRESS_HINTS:
+        if token in lowered:
+            return max(current, threshold)
+    return min(current + 0.02, 0.9)
+
+
+def _process_selected(apps: Sequence[AppSpec],
+                      indices: Iterable[int],
+                      *,
+                      action: str,
+                      reporter: Reporter | None = None) -> Tuple[int, int]:
+    """Execute install/uninstall behavior for the selected apps."""
 
     formulas, casks = _installed_sets()
     ok_count = 0
@@ -119,38 +173,162 @@ def install_selected(apps: Sequence[AppSpec],
         return ok_count, fail_count
 
     for pos, idx in enumerate(selection, start=1):
-        _report(InstallEvent("progress", current=pos - 1, total=total))
+        _report(
+            InstallEvent(
+                "progress",
+                current=pos - 1,
+                total=total,
+                operation=action,
+            )
+        )
         app = apps[idx]
-        _report(InstallEvent("log", message=f"Processing {app.label}…"))
-        already = (
+        _report(
+            InstallEvent(
+                "log",
+                message=f"{action.title()} {app.label}…",
+                operation=action,
+            )
+        )
+        installed = (
             app.kind == "formula" and app.brew_name in formulas
             or app.kind == "cask" and app.brew_name in casks
         )
-        if already:
+        target_set = formulas if app.kind == "formula" else casks
+        base_progress = pos - 1
+        if action == "install" and installed:
             ok_count += 1
-            _report(InstallEvent("log",
-                                 message=f"{app.label} already installed."))
+            _report(
+                InstallEvent(
+                    "log",
+                    message=f"{app.label} already installed.",
+                    operation=action,
+                )
+            )
+            _report(
+                InstallEvent(
+                    "progress",
+                    current=pos,
+                    total=total,
+                    operation=action,
+                )
+            )
+            continue
+        if action == "uninstall" and not installed:
+            _report(
+                InstallEvent(
+                    "log",
+                    message=f"{app.label} not installed; skipping.",
+                    operation=action,
+                )
+            )
+            _report(
+                InstallEvent(
+                    "progress",
+                    current=pos,
+                    total=total,
+                    operation=action,
+                )
+            )
             continue
         if app.kind == "cask":
-            args = ["install", "--cask", app.brew_name]
+            args = [action, "--cask", app.brew_name]
         else:
-            args = ["install", app.brew_name]
-        _report(InstallEvent("log",
-                             message=f"Running: brew {' '.join(args)}"))
-        success, output = _run_brew(args)
-        if output.strip():
-            for line in output.strip().splitlines():
-                _report(InstallEvent("log", message=line))
+            args = [action, app.brew_name]
+        verb = "brew " + " ".join(args)
+        _report(
+            InstallEvent(
+                "log",
+                message=f"Running: {verb}",
+                operation=action,
+            )
+        )
+        detail = 0.05
+
+        def _line_callback(line: str) -> None:
+            nonlocal detail
+            _report(
+                InstallEvent(
+                    "log",
+                    message=line,
+                    operation=action,
+                )
+            )
+            detail = _detail_progress(detail, line)
+            _report(
+                InstallEvent(
+                    "progress_detail",
+                    current=min(base_progress + detail, pos),
+                    total=total,
+                    operation=action,
+                )
+            )
+
+        success = _stream_brew(args, line_callback=_line_callback)
         if success:
             ok_count += 1
-            _report(InstallEvent("log",
-                                 message=f"Completed {app.label}."))
+            if action == "install":
+                target_set.add(app.brew_name)
+            else:
+                target_set.discard(app.brew_name)
+            _report(
+                InstallEvent(
+                    "log",
+                    message=f"{action.title()} complete for {app.label}.",
+                    operation=action,
+                )
+            )
         else:
             fail_count += 1
-            _report(InstallEvent("log",
-                                 message=f"Failed {app.label}."))
-    _report(InstallEvent("progress", current=total, total=total))
+            _report(
+                InstallEvent(
+                    "log",
+                    message=f"{action.title()} failed for {app.label}.",
+                    operation=action,
+                )
+            )
+        _report(
+            InstallEvent(
+                "progress",
+                current=pos,
+                total=total,
+                operation=action,
+            )
+        )
+    _report(
+        InstallEvent(
+            "progress",
+            current=total,
+            total=total,
+            operation=action,
+        )
+    )
     return ok_count, fail_count
+
+
+def install_selected(apps: Sequence[AppSpec],
+                     indices: Iterable[int],
+                     reporter: Reporter | None = None) -> Tuple[int, int]:
+    """Install the selected apps with progress reporting."""
+
+    return _process_selected(
+        apps,
+        indices,
+        action="install",
+        reporter=reporter,
+    )
+
+
+def uninstall_selected(apps: Sequence[AppSpec],
+                       indices: Iterable[int],
+                       reporter: Reporter | None = None) -> Tuple[int, int]:
+    """Uninstall the selected apps with progress reporting."""
+
+    return _process_selected(
+        apps,
+        indices,
+        action="uninstall",
+        reporter=reporter,
+    )
 
 
 class InstallerGUI:
@@ -165,10 +343,12 @@ class InstallerGUI:
         self.status_var = tk.StringVar(value="Select apps to install.")
         self.log_queue: "queue.Queue[InstallEvent]" = queue.Queue()
         self.active_thread: threading.Thread | None = None
+        self.current_action: str | None = None
         self.listbox: tk.Listbox
-        self.install_button: tk.Button
+        self.install_button: ttk.Button
+        self.uninstall_button: ttk.Button
         self.progress: ttk.Progressbar
-        self.log_widget: scrolledtext.ScrolledText
+        self.log_widget: tk.Text
         self._build_layout()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(100, self._process_queue)
@@ -193,6 +373,59 @@ class InstallerGUI:
             bordercolor="#1f2533",
             lightcolor="#5ad7ff",
             darkcolor="#5ad7ff",
+        )
+        style.configure(
+            "Primary.TButton",
+            background="#2f6fed",
+            foreground="#ffffff",
+            borderwidth=0,
+            focusthickness=1,
+            focuscolor="#5ad7ff",
+            padding=8,
+        )
+        style.map(
+            "Primary.TButton",
+            background=[("active", "#244fb7"), ("disabled", "#3f4f7b")],
+            foreground=[("disabled", "#b2b8cc")],
+        )
+        style.configure(
+            "Secondary.TButton",
+            background="#272d3f",
+            foreground="#ffffff",
+            borderwidth=0,
+            padding=8,
+        )
+        style.map(
+            "Secondary.TButton",
+            background=[("active", "#1d2333"), ("disabled", "#333b52")],
+            foreground=[("disabled", "#9aa1ba")],
+        )
+        style.configure(
+            "Danger.TButton",
+            background="#c23b3b",
+            foreground="#ffffff",
+            borderwidth=0,
+            padding=8,
+        )
+        style.map(
+            "Danger.TButton",
+            background=[("active", "#992f2f"), ("disabled", "#6a3939")],
+            foreground=[("disabled", "#d8a0a0")],
+        )
+        style.configure(
+            "Dark.Vertical.TScrollbar",
+            troughcolor="#161b28",
+            background="#2b3248",
+            bordercolor="#161b28",
+            lightcolor="#2b3248",
+            darkcolor="#2b3248",
+            arrowcolor="#b2b8cc",
+            gripcount=0,
+            relief="flat",
+        )
+        style.map(
+            "Dark.Vertical.TScrollbar",
+            background=[("active", "#4d5674"), ("pressed", "#5ad7ff")],
         )
 
         outer = tk.Frame(self.root, bg="#10131a")
@@ -255,7 +488,11 @@ class InstallerGUI:
         )
         for spec in self.apps:
             self.listbox.insert(tk.END, spec.label)
-        sb = tk.Scrollbar(list_frame, command=self.listbox.yview)
+        sb = ttk.Scrollbar(
+            list_frame,
+            command=self.listbox.yview,
+            style="Dark.Vertical.TScrollbar",
+        )
         self.listbox.config(yscrollcommand=sb.set)
         self.listbox.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
@@ -270,8 +507,10 @@ class InstallerGUI:
         )
         console_frame.pack(side="right", fill="both", expand=True)
 
-        self.log_widget = scrolledtext.ScrolledText(
-            console_frame,
+        log_container = tk.Frame(console_frame, bg="#10131a")
+        log_container.pack(fill="both", expand=True)
+        self.log_widget = tk.Text(
+            log_container,
             height=18,
             bg="#0f121c",
             fg="#d1d6e5",
@@ -281,7 +520,14 @@ class InstallerGUI:
             state="disabled",
             wrap="word",
         )
-        self.log_widget.pack(fill="both", expand=True)
+        log_sb = ttk.Scrollbar(
+            log_container,
+            command=self.log_widget.yview,
+            style="Dark.Vertical.TScrollbar",
+        )
+        self.log_widget.configure(yscrollcommand=log_sb.set)
+        self.log_widget.pack(side="left", fill="both", expand=True)
+        log_sb.pack(side="right", fill="y")
 
         self.progress = ttk.Progressbar(
             console_frame,
@@ -301,27 +547,25 @@ class InstallerGUI:
 
         actions = tk.Frame(outer, bg="#10131a")
         actions.pack(fill="x", pady=(16, 0))
-        self.install_button = tk.Button(
+        self.install_button = ttk.Button(
             actions,
             text="Install Selected",
-            command=self._on_install_clicked,
-            bg="#2f6fed",
-            fg="#ffffff",
-            activebackground="#244fb7",
-            relief="flat",
-            padx=12,
-            pady=8,
+            command=lambda: self._start_action("install"),
+            style="Primary.TButton",
         )
         self.install_button.pack(side="left")
-        quit_btn = tk.Button(
+        self.uninstall_button = ttk.Button(
+            actions,
+            text="Uninstall Selected",
+            command=lambda: self._start_action("uninstall"),
+            style="Danger.TButton",
+        )
+        self.uninstall_button.pack(side="left", padx=(12, 0))
+        quit_btn = ttk.Button(
             actions,
             text="Quit",
             command=self._on_close,
-            bg="#272d3f",
-            fg="#ffffff",
-            relief="flat",
-            padx=12,
-            pady=8,
+            style="Secondary.TButton",
         )
         quit_btn.pack(side="right")
 
@@ -340,8 +584,8 @@ class InstallerGUI:
         )
         canvas.create_rectangle(38, 46, 64, 58, fill="#26c485", outline="")
 
-    def _on_install_clicked(self) -> None:
-        """Start the installation workflow on a worker thread."""
+    def _start_action(self, action: str) -> None:
+        """Start install/uninstall workflow on a worker thread."""
 
         selection = list(self.listbox.curselection())
         if not selection:
@@ -350,40 +594,51 @@ class InstallerGUI:
         if self.active_thread and self.active_thread.is_alive():
             messagebox.showinfo(
                 "Busy",
-                "An installation is already running. Please wait.",
+                "An operation is already running. Please wait.",
             )
             return
+        self.current_action = action
         self._toggle_inputs(enabled=False)
         self.progress["value"] = 0
         self.progress["maximum"] = max(len(selection), 1)
         names = ", ".join(self.apps[idx].label for idx in selection)
-        self.status_var.set("Installing selected applications…")
-        self._append_log(f"Starting installation for: {names}")
+        verb = "Installing" if action == "install" else "Uninstalling"
+        self.status_var.set(f"{verb} selected applications…")
+        self._append_log(f"{verb} the following: {names}")
         self.active_thread = threading.Thread(
-            target=self._run_installation,
-            args=(selection,),
+            target=self._run_action,
+            args=(selection, action),
             daemon=True,
         )
         self.active_thread.start()
 
-    def _run_installation(self, selection: List[int]) -> None:
-        """Execute `brew install` calls without blocking Tk."""
+    def _run_action(self, selection: List[int], action: str) -> None:
+        """Execute the requested brew action without blocking Tk."""
 
-        ok, fail = install_selected(
+        handler = install_selected if action == "install" else uninstall_selected
+        ok, fail = handler(
             self.apps,
             selection,
             reporter=self.log_queue.put,
         )
         self.log_queue.put(
-            InstallEvent("done", succeeded=ok, failed=fail, total=len(selection))
+            InstallEvent(
+                "done",
+                succeeded=ok,
+                failed=fail,
+                total=len(selection),
+                operation=action,
+            )
         )
 
     def _toggle_inputs(self, *, enabled: bool) -> None:
         """Enable or disable the primary controls."""
 
-        state = tk.NORMAL if enabled else tk.DISABLED
-        self.install_button.config(state=state)
-        self.listbox.config(state=state)
+        list_state = tk.NORMAL if enabled else tk.DISABLED
+        btn_state = "normal" if enabled else "disabled"
+        self.install_button.configure(state=btn_state)
+        self.uninstall_button.configure(state=btn_state)
+        self.listbox.config(state=list_state)
 
     def _append_log(self, message: str) -> None:
         """Append a single line to the log view."""
@@ -413,25 +668,43 @@ class InstallerGUI:
             maximum = max(event.total, 1)
             self.progress["maximum"] = maximum
             self.progress["value"] = min(event.current, maximum)
-            self.status_var.set(
-                f"{event.current}/{event.total} steps processed"
-                if event.total
-                else "Processing…"
-            )
+            label = event.operation.title() if event.operation else "Processing"
+            if event.total:
+                self.status_var.set(
+                    f"{label}: {event.current}/{event.total} steps completed"
+                )
+            else:
+                self.status_var.set(f"{label}…")
+        elif event.kind == "progress_detail":
+            maximum = max(event.total, 1)
+            self.progress["maximum"] = maximum
+            self.progress["value"] = min(event.current, maximum)
+            label = event.operation.title() if event.operation else "Processing"
+            if event.total:
+                self.status_var.set(
+                    f"{label}: {event.current:.1f}/{event.total} steps in progress"
+                )
+            else:
+                self.status_var.set(f"{label}…")
         elif event.kind == "done":
+            action_label = {
+                "install": "Installation",
+                "uninstall": "Uninstallation",
+            }.get(event.operation, "Operation")
             summary = (
-                f"Completed installation. Success: {event.succeeded}, "
+                f"{action_label} finished. Success: {event.succeeded}, "
                 f"failed: {event.failed}."
             )
             self._append_log(summary)
             messagebox.showinfo(
-                "Install finished",
-                f"Installed: {event.succeeded}\nFailed: {event.failed}",
+                f"{action_label} complete",
+                f"Completed: {event.succeeded}\nFailed: {event.failed}",
             )
             self._toggle_inputs(enabled=True)
             self.status_var.set("Select more tools or quit.")
             self.progress["value"] = 0
             self.active_thread = None
+            self.current_action = None
 
     def _on_close(self) -> None:
         """Handle the window close action."""

@@ -52,19 +52,63 @@ class SMBState:
 
 
 def _guess_lan_prefix() -> Optional[str]:
-    """Best-effort guess of local /24 prefix, e.g. '192.168.1'."""
+    """Best-effort guess of local /24 prefix, e.g. '192.168.1'.
+
+    This tries several strategies to find a non-loopback, private IPv4
+    address, which tends to be more reliable on macOS and laptops with
+    multiple interfaces.
+    """
+
+    def _valid_ipv4(ip: str) -> bool:
+        try:
+            ip_obj = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        if ip_obj.is_loopback:
+            return False
+        if not ip_obj.is_private:
+            return False
+        return True
+
+    candidates: list[str] = []
+
+    # 1) Basic hostname lookup (may return 127.0.0.1 on some systems)
     try:
         hostname = socket.gethostname()
-        ip = socket.gethostbyname(hostname)
-        ip_obj = ipaddress.ip_address(ip)
-        if not ip_obj.is_private:
-            return None
+        _, _, addrs = socket.gethostbyname_ex(hostname)
+        for ip in addrs:
+            if ip not in candidates:
+                candidates.append(ip)
+    except Exception:
+        pass
+
+    # 2) getaddrinfo-based discovery
+    try:
+        info_list = socket.getaddrinfo(None, 0, socket.AF_INET, socket.SOCK_STREAM)
+        for info in info_list:
+            ip = info[4][0]
+            if ip not in candidates:
+                candidates.append(ip)
+    except Exception:
+        pass
+
+    # 3) Fallback: single gethostbyname
+    try:
+        ip = socket.gethostbyname(socket.gethostname())
+        if ip not in candidates:
+            candidates.append(ip)
+    except Exception:
+        pass
+
+    for ip in candidates:
+        if not _valid_ipv4(ip):
+            continue
         parts = ip.split(".")
         if len(parts) != 4:
-            return None
+            continue
         return ".".join(parts[:3])
-    except Exception:
-        return None
+
+    return None
 
 
 class SambaBrowserApp(tk.Tk):

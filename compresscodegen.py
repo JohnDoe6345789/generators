@@ -12,8 +12,52 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from textwrap import dedent
+from typing import Sequence
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+
+
+UINT32_MASK = 0xFFFFFFFF
+
+
+def synthesize_uint32_payload(size: int = 128) -> list[int]:
+    """Return deterministic, delta-friendly uint32 data.
+
+    The generated payload mimics slowly changing sensor data so the deltas
+    produced by the C++ templates remain small and highly compressible.
+    """
+
+    if size <= 0:
+        return []
+
+    payload: list[int] = []
+    current = 0
+    for index in range(size):
+        stride = ((index % 5) + 1)
+        if index % 24 == 0:
+            stride += 2
+        current = (current + stride) & UINT32_MASK
+        payload.append(current)
+    return payload
+
+
+def simulate_delta_compression(values: Sequence[int]) -> list[int]:
+    """Mimic the CpuBackend delta loop using uint32 arithmetic."""
+
+    if not values:
+        return []
+
+    deltas: list[int] = []
+    prev = 0
+    for idx, raw in enumerate(values):
+        value = raw & UINT32_MASK
+        if idx == 0:
+            delta = value
+        else:
+            delta = (value - prev) & UINT32_MASK
+        deltas.append(delta)
+        prev = value
+    return deltas
 
 
 # ======================================================================

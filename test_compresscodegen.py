@@ -33,6 +33,27 @@ class TemplateTests(unittest.TestCase):
         self.assertIn("m_future = QtConcurrent::run", source)
         self.assertIn("m_future.waitForFinished()", source)
 
+    def test_sample_payload_remains_delta_friendly(self):
+        payload = compresscodegen.synthesize_uint32_payload(64)
+        repeated = compresscodegen.synthesize_uint32_payload(64)
+        deltas = compresscodegen.simulate_delta_compression(payload)
+
+        self.assertEqual(payload, repeated)
+        self.assertEqual(len(payload), len(deltas))
+        self.assertGreater(max(payload), max(deltas))
+        self.assertLess(max(deltas[1:]), 16)
+
+    def test_delta_simulation_matches_cpu_template_contract(self):
+        cpu_src = self.templates["plugins/cpu/CpuBackend.cpp"]
+        payload = [0xFFFFFFF0, 0xFFFFFFFF, 0x00000005]
+        deltas = compresscodegen.simulate_delta_compression(payload)
+
+        self.assertIn("deltas[0] = buf[0];", cpu_src)
+        self.assertIn("deltas[i] = buf[i] - buf[i - 1];", cpu_src)
+        self.assertEqual(deltas[0], payload[0] & 0xFFFFFFFF)
+        self.assertEqual(deltas[1], 0x0000000F)
+        self.assertEqual(deltas[2], 0x00000006)
+
 
 if __name__ == "__main__":
     unittest.main()

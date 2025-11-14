@@ -83,9 +83,11 @@ def run_with_privileges(
     log: Queue[str],
     check: bool = False,
 ) -> None:
+    escaped = shell_cmd.replace('\\', '\\\\').replace('"', '\\"')
+
     osa_script = (
-        f'do shell script "{shell_cmd.replace(\'"\', \'\\\\\"\')}" '
-        "with administrator privileges"
+        f'do shell script "{escaped}" '
+        'with administrator privileges'
     )
     try:
         proc = subprocess.run(

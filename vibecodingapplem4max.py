@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/opt/homebrew/bin/python3 python3
 """
 M4 Max Vibe Coding Setup Script (macOS)
 

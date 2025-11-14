@@ -29,6 +29,9 @@ import tkinter.ttk as ttk
 from dataclasses import dataclass
 from typing import List, Optional
 
+# Default domain for SMB connections
+DEFAULT_DOMAIN = "WORKGROUP"
+
 try:
     from smb.SMBConnection import SMBConnection
 except Exception as exc:  # pragma: no cover
@@ -118,6 +121,8 @@ class SambaBrowserApp(tk.Tk):
         self.geometry("900x520")
         self.state = SMBState()
         self.discovered_servers: List[str] = []
+        self.server_display_map: dict[str, str] = {}
+        self.server_credentials: dict[str, tuple[str, str, str]] = {}
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -140,24 +145,12 @@ class SambaBrowserApp(tk.Tk):
         )
         self.discover_button.grid(row=0, column=4, sticky="w", padx=4)
 
-        ttk.Label(top, text="Domain:").grid(row=1, column=0, sticky="w")
-        self.domain_entry = ttk.Entry(top, width=24)
-        self.domain_entry.grid(row=1, column=1, sticky="we", padx=4)
-
-        ttk.Label(top, text="Username:").grid(row=1, column=2, sticky="w")
-        self.username_entry = ttk.Entry(top, width=16)
-        self.username_entry.grid(row=1, column=3, sticky="we", padx=4)
-
-        ttk.Label(top, text="Password:").grid(row=2, column=0, sticky="w")
-        self.password_entry = ttk.Entry(top, width=24, show="*")
-        self.password_entry.grid(row=2, column=1, sticky="we", padx=4)
-
         self.connect_button = ttk.Button(
             top,
-            text="Connect",
+            text="Connect...",
             command=self.on_connect_clicked,
         )
-        self.connect_button.grid(row=2, column=3, sticky="e", padx=4)
+        self.connect_button.grid(row=1, column=4, sticky="e", padx=4, pady=(4, 0))
 
         top.columnconfigure(1, weight=1)
 
@@ -238,6 +231,7 @@ class SambaBrowserApp(tk.Tk):
 
         self.discover_button.config(state=tk.DISABLED)
         self.discovered_servers.clear()
+        self.server_display_map.clear()
         self.server_entry["values"] = ()
         self.set_status(f"Scanning {prefix}.0/24 for SMB servers...")
 
@@ -261,12 +255,117 @@ class SambaBrowserApp(tk.Tk):
         self.after(0, self._on_discover_finished)
 
     def _add_discovered_server(self, ip: str) -> None:
-        if ip in self.discovered_servers:
+        try:
+            host, _, _ = socket.gethostbyaddr(ip)
+            display = f"{host} ({ip})"
+        except Exception:
+            display = ip
+
+        if display in self.discovered_servers:
             return
-        self.discovered_servers.append(ip)
+
+        self.server_display_map[display] = ip
+        self.discovered_servers.append(display)
         self.server_entry["values"] = tuple(self.discovered_servers)
         if not self.server_entry.get():
-            self.server_entry.set(ip)
+            self.server_entry.set(display)
+    def _resolve_server_host(self, text: str) -> str:
+        """Map a combobox display string back to an IP/hostname."""
+        mapped = self.server_display_map.get(text)
+        if mapped:
+            return mapped
+        if "(" in text and ")" in text:
+            try:
+                inner = text.split("(", 1)[1].split(")", 1)[0].strip()
+                if inner:
+                    return inner
+            except Exception:
+                pass
+        return text
+
+    def _prompt_credentials(self, server: str) -> Optional[tuple[str, str, str]]:
+        """Prompt for domain/username/password.
+
+        Defaults to anonymous (blank username/password) and DEFAULT_DOMAIN.
+        Returns (domain, username, password) or None if cancelled.
+        """
+
+        dialog = tk.Toplevel(self)
+        dialog.title(f"Credentials for {server}")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ttk.Label(dialog, text=f"Server: {server}").grid(
+            row=0,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            padx=8,
+            pady=(8, 4),
+        )
+
+        ttk.Label(dialog, text="Domain:").grid(
+            row=1,
+            column=0,
+            sticky="w",
+            padx=8,
+            pady=2,
+        )
+        domain_var = tk.StringVar(value=DEFAULT_DOMAIN)
+        domain_entry = ttk.Entry(dialog, textvariable=domain_var, width=24)
+        domain_entry.grid(row=1, column=1, sticky="we", padx=8, pady=2)
+
+        ttk.Label(dialog, text="Username (blank = anonymous):").grid(
+            row=2,
+            column=0,
+            sticky="w",
+            padx=8,
+            pady=2,
+        )
+        user_var = tk.StringVar(value="")
+        user_entry = ttk.Entry(dialog, textvariable=user_var, width=24)
+        user_entry.grid(row=2, column=1, sticky="we", padx=8, pady=2)
+
+        ttk.Label(dialog, text="Password:").grid(
+            row=3,
+            column=0,
+            sticky="w",
+            padx=8,
+            pady=2,
+        )
+        password_var = tk.StringVar(value="")
+        password_entry = ttk.Entry(dialog, textvariable=password_var, width=24, show="*")
+        password_entry.grid(row=3, column=1, sticky="we", padx=8, pady=2)
+
+        result: dict[str, Optional[tuple[str, str, str]]] = {"value": None}
+
+        def on_ok() -> None:
+            dom = domain_var.get().strip() or DEFAULT_DOMAIN
+            user = user_var.get().strip()
+            pwd = password_var.get()
+            result["value"] = (dom, user, pwd)
+            dialog.destroy()
+
+        def on_cancel() -> None:
+            result["value"] = None
+            dialog.destroy()
+
+        button_frame = ttk.Frame(dialog)
+        button_frame.grid(row=4, column=0, columnspan=2, pady=(8, 8))
+
+        ok_btn = ttk.Button(button_frame, text="OK", command=on_ok)
+        ok_btn.pack(side=tk.LEFT, padx=4)
+
+        cancel_btn = ttk.Button(button_frame, text="Cancel", command=on_cancel)
+        cancel_btn.pack(side=tk.LEFT, padx=4)
+
+        dialog.columnconfigure(1, weight=1)
+        user_entry.focus_set()
+        dialog.bind("<Return>", lambda _event: on_ok())
+        dialog.bind("<Escape>", lambda _event: on_cancel())
+
+        self.wait_window(dialog)
+        return result["value"]
 
     def _on_discover_finished(self) -> None:
         self.discover_button.config(state=tk.NORMAL)
@@ -287,10 +386,12 @@ class SambaBrowserApp(tk.Tk):
             )
             return
 
-        server = self.server_entry.get().strip()
-        if not server:
+        server_text = self.server_entry.get().strip()
+        if not server_text:
             messagebox.showerror("Error", "Please enter or select a server.")
             return
+
+        server = self._resolve_server_host(server_text)
 
         try:
             port = int(self.port_entry.get().strip() or "445")
@@ -298,9 +399,14 @@ class SambaBrowserApp(tk.Tk):
             messagebox.showerror("Error", "Port must be a number.")
             return
 
-        username = self.username_entry.get().strip()
-        password = self.password_entry.get()
-        domain = self.domain_entry.get().strip()
+        creds = self.server_credentials.get(server)
+        if creds is None:
+            creds = self._prompt_credentials(server)
+            if creds is None:
+                # User cancelled
+                return
+
+        domain, username, password = creds
 
         self.connect_button.config(state=tk.DISABLED)
         self.set_status("Connecting...")
@@ -338,6 +444,8 @@ class SambaBrowserApp(tk.Tk):
             ok = conn.connect(server, port, timeout=10)
             if not ok:
                 raise OSError("Connection failed")
+            # Remember the last-used credentials for this server
+            self.server_credentials[server] = (domain or DEFAULT_DOMAIN, username or "", password or "")
         except Exception as exc:
             self.after(0, lambda exc=exc: self._on_connect_failed(exc))
             return

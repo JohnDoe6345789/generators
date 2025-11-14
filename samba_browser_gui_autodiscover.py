@@ -125,7 +125,8 @@ class SambaBrowserApp(tk.Tk):
         self.discovered_servers: List[str] = []
         self.server_display_map: dict[str, str] = {}
         self.server_credentials: dict[str, tuple[str, str, str]] = {}
-        self.hostname_resolution_failures: int = 0
+        self.servers_with_hostname: int = 0
+        self.servers_ip_only: int = 0
         self.hostname_resolution_detail: dict[str, str] = {}
         self._build_ui()
 
@@ -236,10 +237,11 @@ class SambaBrowserApp(tk.Tk):
         self.discover_button.config(state=tk.DISABLED)
         self.discovered_servers.clear()
         self.server_display_map.clear()
-        self.hostname_resolution_failures = 0
+        self.servers_with_hostname = 0
+        self.servers_ip_only = 0
         self.hostname_resolution_detail.clear()
         self.server_entry["values"] = ()
-        self.set_status(f"Scanning {prefix}.0/24 for SMB servers...")
+        self.set_status(f"Scanning {prefix}.0/24 for SMB servers (port 445)...")
 
         thread = threading.Thread(
             target=self._discover_worker,
@@ -264,21 +266,26 @@ class SambaBrowserApp(tk.Tk):
         """Add a discovered SMB server using a friendly display name if possible.
 
         We try reverse DNS, FQDN, and NetBIOS; if those fail or just echo the IP, we
-        fall back to the raw IP string.
+        fall back to the raw IP string. The dropdown is kept sorted with named hosts
+        first, then IP-only entries.
         """
 
         display: str
         host: str | None = None
+        resolution_method: str = ""
         reasons: list[str] = []
 
         # Try reverse DNS first
         try:
             host, _, _ = socket.gethostbyaddr(ip)
             if host == ip:
+                host = None
                 reasons.append("reverse DNS returned IP only")
+            else:
+                resolution_method = "DNS"
         except Exception:
             host = None
-            reasons.append("reverse DNS lookup failed")
+            reasons.append("reverse DNS failed")
 
         # If reverse DNS did not produce something useful, try FQDN
         if not host or host == ip:
@@ -290,6 +297,7 @@ class SambaBrowserApp(tk.Tk):
             else:
                 if fqdn and fqdn != ip:
                     host = fqdn
+                    resolution_method = "FQDN"
                 elif fqdn == ip:
                     reasons.append("FQDN returned IP only")
 
@@ -302,21 +310,23 @@ class SambaBrowserApp(tk.Tk):
                         names = nb.queryIPForName(ip, timeout=0.3)
                     if names:
                         host = names[0]
+                        resolution_method = "NetBIOS"
                     else:
                         reasons.append("NetBIOS returned no names")
-                except Exception:
-                    reasons.append("NetBIOS lookup errored")
+                except Exception as e:
+                    reasons.append(f"NetBIOS lookup error: {type(e).__name__}")
             else:
-                reasons.append("NetBIOS support not available (nmb module missing)")
+                reasons.append("NetBIOS not available")
 
         if host and host != ip:
             display = f"{host} ({ip})"
+            self.servers_with_hostname += 1
+            detail = f"Resolved via {resolution_method}"
+            self.hostname_resolution_detail[ip] = detail
         else:
-            display = ip
-            # Track that hostname discovery failed for this server so we can
-            # surface a friendly hint when discovery finishes.
-            self.hostname_resolution_failures += 1
-            detail = "; ".join(reasons) if reasons else "No usable hostname from DNS/NetBIOS."
+            display = f"[IP-only] {ip}"
+            self.servers_ip_only += 1
+            detail = "; ".join(reasons) if reasons else "No hostname via DNS/NetBIOS"
             self.hostname_resolution_detail[ip] = detail
 
         if display in self.discovered_servers:
@@ -324,9 +334,24 @@ class SambaBrowserApp(tk.Tk):
 
         self.server_display_map[display] = ip
         self.discovered_servers.append(display)
+        
+        # Sort: named hosts first (those without [IP-only] prefix), then IP-only entries
+        sorted_servers = sorted(
+            self.discovered_servers,
+            key=lambda s: (s.startswith("[IP-only]"), s.lower())
+        )
+        self.discovered_servers = sorted_servers
         self.server_entry["values"] = tuple(self.discovered_servers)
+        
         if not self.server_entry.get():
             self.server_entry.set(display)
+        
+        # Update status with live count
+        total = len(self.discovered_servers)
+        self.set_status(
+            f"Scanning... Found {total} server(s) "
+            f"({self.servers_with_hostname} named, {self.servers_ip_only} IP-only)"
+        )
 
     def _ensure_manual_server_in_list(self, text: str, resolved: str) -> None:
         """Ensure a manually typed server name appears in the dropdown.
@@ -343,10 +368,21 @@ class SambaBrowserApp(tk.Tk):
                 self.server_display_map.setdefault(text, resolved)
             self.server_entry["values"] = tuple(self.discovered_servers)
     def _resolve_server_host(self, text: str) -> str:
-        """Map a combobox display string back to an IP/hostname."""
+        """Map a combobox display string back to an IP/hostname.
+        
+        Handles both '[IP-only] x.x.x.x' and 'hostname (x.x.x.x)' formats.
+        """
         mapped = self.server_display_map.get(text)
         if mapped:
             return mapped
+        
+        # Handle '[IP-only] x.x.x.x' format
+        if text.startswith("[IP-only]"):
+            ip = text.replace("[IP-only]", "").strip()
+            if ip:
+                return ip
+        
+        # Handle 'hostname (x.x.x.x)' format
         if "(" in text and ")" in text:
             try:
                 inner = text.split("(", 1)[1].split(")", 1)[0].strip()
@@ -354,6 +390,7 @@ class SambaBrowserApp(tk.Tk):
                     return inner
             except Exception:
                 pass
+        
         return text
 
     def _prompt_credentials(self, server: str) -> Optional[tuple[str, str, str]]:
@@ -444,24 +481,25 @@ class SambaBrowserApp(tk.Tk):
         self.discover_button.config(state=tk.NORMAL)
         if self.discovered_servers:
             total = len(self.discovered_servers)
-            message = f"Found {total} SMB server(s) on LAN."
-            if self.hostname_resolution_failures:
-                if self.hostname_resolution_failures >= total:
-                    message += " Using IP addresses only; servers did not advertise hostnames via DNS/NetBIOS, which is common on some home networks."
-                else:
-                    message += " Some servers did not advertise hostnames; those entries are shown as IP addresses."
-
-                # Append a compact per-IP summary of hostname lookup issues.
-                problems: list[str] = []
-                for ip, detail in self.hostname_resolution_detail.items():
-                    problems.append(f"{ip}: {detail}")
-                if problems:
-                    joined = " | ".join(problems)
-                    message += f" Hostname details: {joined}."
-
+            if self.servers_ip_only == 0:
+                # All servers resolved to hostnames
+                message = f"Discovery complete: Found {total} SMB server(s), all with hostnames."
+            elif self.servers_with_hostname == 0:
+                # No servers resolved to hostnames
+                message = (
+                    f"Discovery complete: Found {total} SMB server(s), all IP-only. "
+                    f"This is normal on networks without DNS/NetBIOS name resolution."
+                )
+            else:
+                # Mixed results
+                message = (
+                    f"Discovery complete: Found {total} SMB server(s) "
+                    f"({self.servers_with_hostname} named, {self.servers_ip_only} IP-only). "
+                    f"Entries marked [IP-only] could not resolve hostnames via DNS/NetBIOS."
+                )
             self.set_status(message)
         else:
-            self.set_status("No SMB servers found on LAN.")
+            self.set_status("Discovery complete: No SMB servers found on LAN.")
 
     # -------- Connection handling --------
 

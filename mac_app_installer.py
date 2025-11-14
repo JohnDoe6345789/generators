@@ -25,8 +25,17 @@ APP_LIST: List[AppSpec] = [
     AppSpec("Rectangle", "rectangle", "cask"),
     AppSpec("Visual Studio Code", "visual-studio-code", "cask"),
     AppSpec("iTerm2", "iterm2", "cask"),
+    AppSpec("Docker Desktop", "docker", "cask"),
+    AppSpec("Slack", "slack", "cask"),
+    AppSpec("Zoom", "zoom", "cask"),
+    AppSpec("Postman", "postman", "cask"),
+    AppSpec("Notion", "notion", "cask"),
     AppSpec("htop", "htop", "formula"),
     AppSpec("git", "git", "formula"),
+    AppSpec("Zsh Syntax Highlighting", "zsh-syntax-highlighting", "formula"),
+    AppSpec("AWS CLI", "awscli", "formula"),
+    AppSpec("Node.js", "node", "formula"),
+    AppSpec("Watchman", "watchman", "formula"),
 ]
 
 

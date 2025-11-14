@@ -1,29 +1,33 @@
 #!/opt/homebrew/bin/python3
 """
-Simple Samba share browser with Tkinter GUI.
+Samba share browser with Tkinter GUI and LAN auto-discovery.
+
+Features:
+  - Auto-discover SMB servers on local /24 LAN (simple port 445 scan)
+  - Connect to SMB/CIFS (Samba) server
+  - List available shares
+  - Browse folders within a share
+  - Prompt for username/password/domain
+  - Download files to a local folder
 
 Requirements:
     pip install pysmb
-
-This script lets you:
-  - Connect to an SMB/CIFS (Samba) server
-  - List available shares
-  - Browse folders within a share
-  - Download files to a local folder
 
 Tested with Python 3.11+.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import os
+import socket
 import threading
 import tkinter as tk
-import tkinter.messagebox as messagebox
 import tkinter.filedialog as filedialog
+import tkinter.messagebox as messagebox
 import tkinter.ttk as ttk
 from dataclasses import dataclass
-from typing import Optional, List
+from typing import List, Optional
 
 try:
     from smb.SMBConnection import SMBConnection
@@ -47,12 +51,29 @@ class SMBState:
             self.path_parts = []
 
 
+def _guess_lan_prefix() -> Optional[str]:
+    """Best-effort guess of local /24 prefix, e.g. '192.168.1'."""
+    try:
+        hostname = socket.gethostname()
+        ip = socket.gethostbyname(hostname)
+        ip_obj = ipaddress.ip_address(ip)
+        if not ip_obj.is_private:
+            return None
+        parts = ip.split(".")
+        if len(parts) != 4:
+            return None
+        return ".".join(parts[:3])
+    except Exception:
+        return None
+
+
 class SambaBrowserApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Samba Share Browser")
-        self.geometry("800x500")
+        self.geometry("900x520")
         self.state = SMBState()
+        self.discovered_servers: List[str] = []
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -60,13 +81,20 @@ class SambaBrowserApp(tk.Tk):
         top.pack(side=tk.TOP, fill=tk.X)
 
         ttk.Label(top, text="Server:").grid(row=0, column=0, sticky="w")
-        self.server_entry = ttk.Entry(top, width=24)
+        self.server_entry = ttk.Combobox(top, width=24)
         self.server_entry.grid(row=0, column=1, sticky="we", padx=4)
 
         ttk.Label(top, text="Port:").grid(row=0, column=2, sticky="w")
         self.port_entry = ttk.Entry(top, width=6)
         self.port_entry.insert(0, "445")
         self.port_entry.grid(row=0, column=3, sticky="w", padx=4)
+
+        self.discover_button = ttk.Button(
+            top,
+            text="Discover LAN servers",
+            command=self.on_discover_clicked,
+        )
+        self.discover_button.grid(row=0, column=4, sticky="w", padx=4)
 
         ttk.Label(top, text="Domain:").grid(row=1, column=0, sticky="w")
         self.domain_entry = ttk.Entry(top, width=24)
@@ -112,11 +140,13 @@ class SambaBrowserApp(tk.Tk):
 
         self.tree = ttk.Treeview(
             main,
-            columns=("type", "size"),
+            columns=("name", "type", "size"),
             show="headings",
         )
+        self.tree.heading("name", text="Name")
         self.tree.heading("type", text="Type")
         self.tree.heading("size", text="Size (bytes)")
+        self.tree.column("name", width=320, anchor="w")
         self.tree.column("type", width=80, anchor="w")
         self.tree.column("size", width=120, anchor="e")
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -151,6 +181,60 @@ class SambaBrowserApp(tk.Tk):
     def set_status(self, text: str) -> None:
         self.status_var.set(text)
 
+    # -------- LAN discovery --------
+
+    def on_discover_clicked(self) -> None:
+        prefix = _guess_lan_prefix()
+        if not prefix:
+            messagebox.showerror(
+                "Discovery error",
+                "Could not determine local LAN prefix automatically.",
+            )
+            return
+
+        self.discover_button.config(state=tk.DISABLED)
+        self.discovered_servers.clear()
+        self.server_entry["values"] = ()
+        self.set_status(f"Scanning {prefix}.0/24 for SMB servers...")
+
+        thread = threading.Thread(
+            target=self._discover_worker,
+            args=(prefix,),
+            daemon=True,
+        )
+        thread.start()
+
+    def _discover_worker(self, prefix: str) -> None:
+        for host in range(1, 255):
+            ip = f"{prefix}.{host}"
+            try:
+                sock = socket.create_connection((ip, 445), timeout=0.2)
+                sock.close()
+            except OSError:
+                continue
+            self.after(0, lambda ip=ip: self._add_discovered_server(ip))
+
+        self.after(0, self._on_discover_finished)
+
+    def _add_discovered_server(self, ip: str) -> None:
+        if ip in self.discovered_servers:
+            return
+        self.discovered_servers.append(ip)
+        self.server_entry["values"] = tuple(self.discovered_servers)
+        if not self.server_entry.get():
+            self.server_entry.set(ip)
+
+    def _on_discover_finished(self) -> None:
+        self.discover_button.config(state=tk.NORMAL)
+        if self.discovered_servers:
+            self.set_status(
+                f"Found {len(self.discovered_servers)} SMB server(s) on LAN.",
+            )
+        else:
+            self.set_status("No SMB servers found on LAN.")
+
+    # -------- Connection handling --------
+
     def on_connect_clicked(self) -> None:
         if _IMPORT_ERROR is not None or SMBConnection is None:
             messagebox.showerror(
@@ -161,7 +245,7 @@ class SambaBrowserApp(tk.Tk):
 
         server = self.server_entry.get().strip()
         if not server:
-            messagebox.showerror("Error", "Please enter a server name or IP.")
+            messagebox.showerror("Error", "Please enter or select a server.")
             return
 
         try:
@@ -211,10 +295,7 @@ class SambaBrowserApp(tk.Tk):
             if not ok:
                 raise OSError("Connection failed")
         except Exception as exc:
-            self.after(
-                0,
-                lambda: self._on_connect_failed(exc),
-            )
+            self.after(0, lambda exc=exc: self._on_connect_failed(exc))
             return
 
         self.state.connection = conn
@@ -230,23 +311,17 @@ class SambaBrowserApp(tk.Tk):
                 if not s.isSpecial and s.name not in ("NETLOGON", "IPC$")
             ]
         except Exception as exc:
-            self.after(
-                0,
-                lambda: self._on_connect_failed(exc),
-            )
+            self.after(0, lambda exc=exc: self._on_connect_failed(exc))
             return
 
-        self.after(
-            0,
-            lambda: self._on_connect_success(shares),
-        )
+        self.after(0, lambda shares=shares: self._on_connect_success(shares))
 
     def _on_connect_failed(self, exc: Exception) -> None:
         self.connect_button.config(state=tk.NORMAL)
         self.set_status("Connection failed.")
         messagebox.showerror("Connection failed", str(exc))
 
-    def _on_connect_success(self, shares: list[str]) -> None:
+    def _on_connect_success(self, shares: List[str]) -> None:
         self.connect_button.config(state=tk.NORMAL)
         self.share_combo["values"] = shares
         if shares:
@@ -254,6 +329,8 @@ class SambaBrowserApp(tk.Tk):
             self.state.share = shares[0]
             self.refresh_listing()
         self.set_status(f"Connected to {self.state.server}.")
+
+    # -------- Directory browsing --------
 
     def on_share_selected(self, _event: object) -> None:
         share = self.share_combo.get().strip()
@@ -288,15 +365,9 @@ class SambaBrowserApp(tk.Tk):
                 remote_path = path or "/"
                 entries = conn.listPath(share, remote_path)
             except Exception as exc:
-                self.after(
-                    0,
-                    lambda: self._on_list_failed(exc),
-                )
+                self.after(0, lambda exc=exc: self._on_list_failed(exc))
                 return
-            self.after(
-                0,
-                lambda: self._on_list_success(entries),
-            )
+            self.after(0, lambda entries=entries: self._on_list_success(entries))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -313,9 +384,7 @@ class SambaBrowserApp(tk.Tk):
             self.tree.insert(
                 "",
                 tk.END,
-                iid=e.filename,
-                values=(entry_type, size_str),
-                text=e.filename,
+                values=(e.filename, entry_type, size_str),
             )
         self.set_status("Ready.")
 
@@ -328,13 +397,15 @@ class SambaBrowserApp(tk.Tk):
         values = item.get("values", [])
         if not values:
             return
-        entry_type = values[0]
-        name = item_id
+        entry_type = values[1]
+        name = values[0]
         if entry_type == "dir":
             self.state.path_parts.append(name)
             self.refresh_listing()
         else:
             self.on_download_clicked()
+
+    # -------- Downloading --------
 
     def on_download_clicked(self) -> None:
         conn = self.state.connection
@@ -354,11 +425,11 @@ class SambaBrowserApp(tk.Tk):
         item_id = selection[0]
         item = self.tree.item(item_id)
         values = item.get("values", [])
-        if not values or values[0] != "file":
+        if not values or values[1] != "file":
             messagebox.showerror("Error", "Please select a file, not a folder.")
             return
 
-        filename = item_id
+        filename = values[0]
         local_dir = filedialog.askdirectory(
             title="Select destination folder",
         )
@@ -374,15 +445,9 @@ class SambaBrowserApp(tk.Tk):
                 with open(local_path, "wb") as fh:
                     conn.retrieveFile(share, remote_path, fh)
             except Exception as exc:
-                self.after(
-                    0,
-                    lambda: self._on_download_failed(exc),
-                )
+                self.after(0, lambda exc=exc: self._on_download_failed(exc))
                 return
-            self.after(
-                0,
-                lambda: self._on_download_success(local_path),
-            )
+            self.after(0, lambda p=local_path: self._on_download_success(p))
 
         threading.Thread(target=worker, daemon=True).start()
 

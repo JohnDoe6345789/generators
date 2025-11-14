@@ -67,6 +67,7 @@ APP_LIST: List[AppSpec] = [
     AppSpec("Rectangle", "rectangle", "cask", "Desktop Enhancements"),
     AppSpec("iTerm2", "iterm2", "cask", "Desktop Enhancements"),
     AppSpec("Visual Studio Code", "visual-studio-code", "cask", "Development"),
+    AppSpec("GitHub Desktop", "github", "cask", "Development"),
     AppSpec("Docker Desktop", "docker", "cask", "Development"),
     AppSpec("Postman", "postman", "cask", "Development"),
     AppSpec("Node.js", "node", "formula", "Development"),
@@ -78,7 +79,12 @@ APP_LIST: List[AppSpec] = [
     AppSpec("AWS CLI", "awscli", "formula", "Operations & Cloud"),
     AppSpec("Slack", "slack", "cask", "Collaboration"),
     AppSpec("Zoom", "zoom", "cask", "Collaboration"),
+    AppSpec("WhatsApp", "whatsapp", "cask", "Collaboration"),
     AppSpec("Notion", "notion", "cask", "Productivity & Notes"),
+    AppSpec("Adobe Acrobat Reader DC", "adobe-acrobat-reader", "cask",
+            "Productivity & Notes"),
+    AppSpec("Bitwarden", "bitwarden", "cask", "Security & Identity"),
+    AppSpec("PrusaSlicer", "prusa-slicer", "cask", "Maker Tools & 3D Printing"),
 ]
 
 

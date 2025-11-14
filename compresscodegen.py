@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import subprocess
+import sys
 from textwrap import dedent
+import threading
 from typing import Sequence
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -1172,6 +1175,263 @@ def generate_project(base_dir: Path, log) -> Path:
 # Tkinter GUI
 # ======================================================================
 
+
+class WelcomeLauncher(tk.Toplevel):
+    """Launcher window that orchestrates install/build/run/test commands."""
+
+    def __init__(self, master, project_getter, on_close):
+        super().__init__(master)
+        self.title("GPU Compress Welcome Launcher")
+        self.geometry("640x420")
+
+        self._project_getter = project_getter
+        self._on_close = on_close
+        self._command_thread: threading.Thread | None = None
+
+        self.path_var = tk.StringVar()
+        self.status_var = tk.StringVar(value="Idle")
+
+        self._build_widgets()
+        self.protocol("WM_DELETE_WINDOW", self._handle_close)
+        self.refresh_project_path()
+
+    def _build_widgets(self) -> None:
+        container = ttk.Frame(self)
+        container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        ttk.Label(container, text="Project location:").pack(anchor=tk.W)
+        ttk.Label(
+            container, textvariable=self.path_var, wraplength=600
+        ).pack(anchor=tk.W, pady=(0, 8))
+
+        ttk.Label(container, text="Actions:").pack(anchor=tk.W)
+        button_frame = ttk.Frame(container)
+        button_frame.pack(fill=tk.X, pady=(0, 10))
+
+        self._buttons = []
+        for text, handler in [
+            ("Install Dependencies", self._on_install),
+            ("Build Program", self._on_build),
+            ("Run Program", self._on_run),
+            ("Run Tests", self._on_test),
+        ]:
+            btn = ttk.Button(button_frame, text=text, command=handler)
+            btn.pack(fill=tk.X, pady=2)
+            self._buttons.append(btn)
+
+        ttk.Label(container, text="Status:").pack(anchor=tk.W)
+        ttk.Label(container, textvariable=self.status_var).pack(
+            anchor=tk.W, pady=(0, 8)
+        )
+
+        log_frame = ttk.Frame(container)
+        log_frame.pack(fill=tk.BOTH, expand=True)
+
+        self.log_text = tk.Text(log_frame, wrap=tk.NONE, height=10)
+        scrollbar = ttk.Scrollbar(
+            log_frame, orient="vertical", command=self.log_text.yview
+        )
+        self.log_text.configure(yscrollcommand=scrollbar.set)
+        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+    def _handle_close(self) -> None:
+        if self._command_thread:
+            messagebox.showinfo(
+                "Command running", "Wait for the current command to finish."
+            )
+            return
+        self._on_close()
+        self.destroy()
+
+    def refresh_project_path(self) -> None:
+        root = self._project_getter()
+        if root is None:
+            self.path_var.set("Generate a project to enable launcher actions.")
+            state = tk.DISABLED
+        else:
+            self.path_var.set(str(root))
+            state = tk.NORMAL
+        for btn in self._buttons:
+            btn.configure(state=state)
+
+    def _ensure_project_root(self) -> Path | None:
+        root = self._project_getter()
+        if root is None:
+            messagebox.showerror(
+                "Project missing",
+                "Generate the project before using the launcher.",
+            )
+            return None
+        return root
+
+    def _on_install(self) -> None:
+        self._run_action("Installing dependencies", self._install_command)
+
+    def _on_build(self) -> None:
+        self._run_action("Building program", self._build_command)
+
+    def _on_run(self) -> None:
+        self._run_action("Running program", self._run_command)
+
+    def _on_test(self) -> None:
+        self._run_action("Running tests", self._test_command)
+
+    def _run_action(self, description, command_factory) -> None:
+        if self._command_thread:
+            messagebox.showinfo(
+                "Command running",
+                "Wait for the existing command to complete.",
+            )
+            return
+
+        project_root = self._ensure_project_root()
+        if project_root is None:
+            return
+
+        command_info = command_factory(project_root)
+        if command_info is None:
+            return
+        command, cwd = command_info
+
+        self.status_var.set(description)
+        for btn in self._buttons:
+            btn.configure(state=tk.DISABLED)
+
+        self._command_thread = threading.Thread(
+            target=self._run_command_thread,
+            args=(description, command, cwd),
+            daemon=True,
+        )
+        self._command_thread.start()
+
+    def _run_command_thread(
+        self, description: str, command: Sequence[str], cwd: Path
+    ) -> None:
+        self._queue_log(f"=== {description} ===")
+        try:
+            proc = subprocess.Popen(
+                command,
+                cwd=str(cwd),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                self._queue_log(line.rstrip())
+            return_code = proc.wait()
+            self._queue_log(f"[exit code {return_code}]")
+        except FileNotFoundError:
+            self._queue_log(
+                f"Command not found: {command[0]}"
+            )
+        except Exception as exc:
+            self._queue_log(f"Command failed: {exc}")
+        finally:
+            self.after(0, self._on_command_complete)
+
+    def _on_command_complete(self) -> None:
+        self._command_thread = None
+        self.status_var.set("Idle")
+        self.refresh_project_path()
+
+    def _queue_log(self, message: str) -> None:
+        self.after(0, self._append_log, message)
+
+    def _append_log(self, message: str) -> None:
+        self.log_text.insert(tk.END, message + "\n")
+        self.log_text.see(tk.END)
+
+    def _install_command(
+        self, project_root: Path
+    ) -> tuple[list[str], Path] | None:
+        scripts = project_root / "scripts"
+        script = None
+        if os.name == "nt":
+            script = scripts / "install_deps.ps1"
+            if not script.exists():
+                messagebox.showerror(
+                    "Missing script",
+                    f"Could not find {script}.",
+                )
+                return None
+            command = [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(script),
+            ]
+        elif sys.platform == "darwin":
+            script = scripts / "install_deps_mac.sh"
+            if not script.exists():
+                script = scripts / "install_deps.sh"
+            if not script.exists():
+                messagebox.showerror(
+                    "Missing script",
+                    "No install_deps script found.",
+                )
+                return None
+            command = ["/bin/bash", str(script)]
+        else:
+            script = scripts / "install_deps.sh"
+            if not script.exists():
+                messagebox.showerror(
+                    "Missing script",
+                    f"Could not find {script}.",
+                )
+                return None
+            command = ["/bin/bash", str(script)]
+        return command, project_root
+
+    def _build_command(
+        self, project_root: Path
+    ) -> tuple[list[str], Path] | None:
+        scripts = project_root / "scripts"
+        if os.name == "nt":
+            script = scripts / "build.bat"
+            if not script.exists():
+                messagebox.showerror("Missing script", f"{script} not found.")
+                return None
+            return (["cmd", "/c", str(script)], project_root)
+        script = scripts / "build.sh"
+        if not script.exists():
+            messagebox.showerror("Missing script", f"{script} not found.")
+            return None
+        return (["/bin/bash", str(script)], project_root)
+
+    def _run_command(
+        self, project_root: Path
+    ) -> tuple[list[str], Path] | None:
+        scripts = project_root / "scripts"
+        if os.name == "nt":
+            script = scripts / "run.bat"
+            if not script.exists():
+                messagebox.showerror("Missing script", f"{script} not found.")
+                return None
+            return (["cmd", "/c", str(script)], project_root)
+        script = scripts / "run.sh"
+        if not script.exists():
+            messagebox.showerror("Missing script", f"{script} not found.")
+            return None
+        return (["/bin/bash", str(script)], project_root)
+
+    def _test_command(
+        self, project_root: Path
+    ) -> tuple[list[str], Path] | None:
+        build_dir = project_root / "build"
+        if not build_dir.exists():
+            messagebox.showerror(
+                "Build directory missing",
+                f"{build_dir} not found. Run build first.",
+            )
+            return None
+        command = ["ctest", "--output-on-failure"]
+        return command, build_dir
+
+
 class GeneratorGUI(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -1179,6 +1439,8 @@ class GeneratorGUI(tk.Tk):
         self.geometry("1000x600")
 
         self.base_dir = tk.StringVar(value=str(Path.cwd()))
+        self.project_root: Path | None = None
+        self.launcher: WelcomeLauncher | None = None
 
         self._build_widgets()
 
@@ -1198,6 +1460,11 @@ class GeneratorGUI(tk.Tk):
         ttk.Button(
             top_frame, text="Generate Project",
             command=self._on_generate
+        ).pack(side=tk.LEFT, padx=4)
+
+        ttk.Button(
+            top_frame, text="Welcome Launcher",
+            command=self._open_launcher
         ).pack(side=tk.LEFT, padx=4)
 
         # Split: left = file tree, right = log
@@ -1243,7 +1510,9 @@ class GeneratorGUI(tk.Tk):
 
         try:
             project_root = generate_project(base, self.log)
+            self.project_root = project_root
             self._populate_tree(project_root)
+            self._notify_launcher()
             messagebox.showinfo("Done", f"Project generated at:\n{project_root}")
         except Exception as exc:
             messagebox.showerror("Error", f"Generation failed:\n{exc}")
@@ -1262,6 +1531,23 @@ class GeneratorGUI(tk.Tk):
                     insert_node(node_id, child)
 
         insert_node("", root)
+
+    def _open_launcher(self):
+        if self.launcher:
+            self.launcher.lift()
+            return
+
+        def on_close():
+            self.launcher = None
+
+        self.launcher = WelcomeLauncher(self, self._get_project_root, on_close)
+
+    def _get_project_root(self) -> Path | None:
+        return self.project_root
+
+    def _notify_launcher(self) -> None:
+        if self.launcher:
+            self.launcher.refresh_project_path()
 
 
 if __name__ == "__main__":

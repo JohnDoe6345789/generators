@@ -223,6 +223,7 @@ def get_templates():
         r"""
         #pragma once
 
+        #include <QFuture>
         #include <QObject>
         #include <QString>
         #include <QtConcurrent>
@@ -240,6 +241,7 @@ def get_templates():
 
         public:
             explicit CompressorController(QObject *parent = nullptr);
+            ~CompressorController();
 
             QString inputFile() const { return m_input; }
             QString outputFile() const { return m_output; }
@@ -270,6 +272,7 @@ def get_templates():
             QString m_backendName = "<none>";
 
             PluginLoader m_loader;
+            QFuture<void> m_future;
         };
         """
     )
@@ -280,12 +283,20 @@ def get_templates():
 
         #include <QFileDialog>
         #include <QDebug>
+        #include <QMetaObject>
+        #include <QPointer>
 
         CompressorController::CompressorController(QObject *parent)
             : QObject(parent) {
             m_loader.discover();
             m_backendName = m_loader.backendName();
             emit backendNameChanged();
+        }
+
+        CompressorController::~CompressorController() {
+            if (m_future.isRunning()) {
+                m_future.waitForFinished();
+            }
         }
 
         void CompressorController::pickInput() {
@@ -309,6 +320,12 @@ def get_templates():
         }
 
         void CompressorController::startCompression() {
+            if (m_future.isRunning()) {
+                m_status = "Compression already running";
+                emit statusChanged();
+                return;
+            }
+
             auto *backend = m_loader.backend();
             if (!backend) {
                 m_status = "No backend plugins found";
@@ -321,19 +338,36 @@ def get_templates():
             emit statusChanged();
             emit progressChanged();
 
-            QtConcurrent::run([this, backend] {
-                backend->compress(
-                    m_input,
-                    m_output,
-                    [this](double p) {
-                        m_progress = p;
-                        emit progressChanged();
+            const QString input = m_input;
+            const QString output = m_output;
+
+            QPointer<CompressorController> guard(this);
+            auto reportProgress = [guard](double p) {
+                if (!guard) return;
+                QMetaObject::invokeMethod(
+                    guard,
+                    [guard, p]() {
+                        guard->m_progress = p;
+                        emit guard->progressChanged();
                     },
-                    [this](const QString &msg) {
-                        m_status = msg;
-                        emit statusChanged();
-                    }
+                    Qt::QueuedConnection
                 );
+            };
+
+            auto reportStatus = [guard](const QString &msg) {
+                if (!guard) return;
+                QMetaObject::invokeMethod(
+                    guard,
+                    [guard, msg]() {
+                        guard->m_status = msg;
+                        emit guard->statusChanged();
+                    },
+                    Qt::QueuedConnection
+                );
+            };
+
+            m_future = QtConcurrent::run([backend, input, output, reportProgress, reportStatus] {
+                backend->compress(input, output, reportProgress, reportStatus);
             });
         }
         """
@@ -531,6 +565,7 @@ def get_templates():
         r"""
         #include "CpuBackend.hpp"
 
+        #include <cstdint>
         #include <fstream>
         #include <vector>
 
@@ -640,6 +675,7 @@ def get_templates():
         r"""
         #include "HipBackend.hpp"
 
+        #include <cstdint>
         #include <hip/hip_runtime.h>
         #include <fstream>
         #include <vector>
@@ -768,6 +804,7 @@ def get_templates():
         #import <Metal/Metal.h>
         #import <Foundation/Foundation.h>
 
+        #include <cstdint>
         #include <fstream>
         #include <vector>
 
@@ -1171,8 +1208,6 @@ class GeneratorGUI(tk.Tk):
         # Clear previous
         for item in self.tree.get_children():
             self.tree.delete(item)
-
-        root_str = str(root)
 
         def insert_node(parent, path: Path):
             node_id = self.tree.insert(

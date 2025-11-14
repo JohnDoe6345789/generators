@@ -178,10 +178,32 @@ def install_ollama(log: Queue[str]) -> None:
     if detect_ollama():
         log.put("[OK] Ollama already installed (fuzzy detected).\n")
         return
+
     log.put("[INFO] Installing Ollama...\n")
-    cmd = "curl -fsSL https://ollama.com/install.sh | sh"
-    run_with_privileges(cmd, log, check=True)
-    log.put("[OK] Ollama install script executed.\n")
+
+    if detect_homebrew():
+        brew = which("brew") or "/opt/homebrew/bin/brew"
+        run_cmd([
+            brew,
+            "update",
+        ], log, check=False)
+        run_cmd([
+            brew,
+            "install",
+            "--cask",
+            "ollama",
+        ], log, check=False)
+        log.put("[OK] Ollama install via Homebrew attempted.\n")
+    else:
+        log.put(
+            "[WARN] Homebrew not found. Opening Ollama download page "
+            "in your browser. Please install it manually, then rerun "
+            "this setup.\n"
+        )
+        run_cmd([
+            "open",
+            "https://ollama.com/download/mac",
+        ], log, check=False)
 
 
 def install_vscode(log: Queue[str]) -> None:

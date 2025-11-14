@@ -34,8 +34,10 @@ DEFAULT_DOMAIN = "WORKGROUP"
 
 try:
     from smb.SMBConnection import SMBConnection
+    from nmb.NetBIOS import NetBIOS
 except Exception as exc:  # pragma: no cover
     SMBConnection = None  # type: ignore[assignment]
+    NetBIOS = None  # type: ignore[assignment]
     _IMPORT_ERROR = exc
 else:
     _IMPORT_ERROR = None
@@ -124,6 +126,7 @@ class SambaBrowserApp(tk.Tk):
         self.server_display_map: dict[str, str] = {}
         self.server_credentials: dict[str, tuple[str, str, str]] = {}
         self.hostname_resolution_failures: int = 0
+        self.hostname_resolution_detail: dict[str, str] = {}
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -234,6 +237,7 @@ class SambaBrowserApp(tk.Tk):
         self.discovered_servers.clear()
         self.server_display_map.clear()
         self.hostname_resolution_failures = 0
+        self.hostname_resolution_detail.clear()
         self.server_entry["values"] = ()
         self.set_status(f"Scanning {prefix}.0/24 for SMB servers...")
 
@@ -259,18 +263,22 @@ class SambaBrowserApp(tk.Tk):
     def _add_discovered_server(self, ip: str) -> None:
         """Add a discovered SMB server using a friendly display name if possible.
 
-        We try reverse DNS and FQDN; if those fail or just echo the IP, we
+        We try reverse DNS, FQDN, and NetBIOS; if those fail or just echo the IP, we
         fall back to the raw IP string.
         """
 
         display: str
         host: str | None = None
+        reasons: list[str] = []
 
         # Try reverse DNS first
         try:
             host, _, _ = socket.gethostbyaddr(ip)
+            if host == ip:
+                reasons.append("reverse DNS returned IP only")
         except Exception:
             host = None
+            reasons.append("reverse DNS lookup failed")
 
         # If reverse DNS did not produce something useful, try FQDN
         if not host or host == ip:
@@ -278,8 +286,28 @@ class SambaBrowserApp(tk.Tk):
                 fqdn = socket.getfqdn(ip)
             except Exception:
                 fqdn = ""
-            if fqdn and fqdn != ip:
-                host = fqdn
+                reasons.append("FQDN lookup failed")
+            else:
+                if fqdn and fqdn != ip:
+                    host = fqdn
+                elif fqdn == ip:
+                    reasons.append("FQDN returned IP only")
+
+        # If we still do not have a useful hostname, try NetBIOS via pysmb's
+        # nmb helper. This is often what SMB browsers use on local networks.
+        if not host or host == ip:
+            if NetBIOS is not None:
+                try:
+                    with NetBIOS() as nb:
+                        names = nb.queryIPForName(ip, timeout=0.3)
+                    if names:
+                        host = names[0]
+                    else:
+                        reasons.append("NetBIOS returned no names")
+                except Exception:
+                    reasons.append("NetBIOS lookup errored")
+            else:
+                reasons.append("NetBIOS support not available (nmb module missing)")
 
         if host and host != ip:
             display = f"{host} ({ip})"
@@ -288,6 +316,8 @@ class SambaBrowserApp(tk.Tk):
             # Track that hostname discovery failed for this server so we can
             # surface a friendly hint when discovery finishes.
             self.hostname_resolution_failures += 1
+            detail = "; ".join(reasons) if reasons else "No usable hostname from DNS/NetBIOS."
+            self.hostname_resolution_detail[ip] = detail
 
         if display in self.discovered_servers:
             return
@@ -413,9 +443,22 @@ class SambaBrowserApp(tk.Tk):
     def _on_discover_finished(self) -> None:
         self.discover_button.config(state=tk.NORMAL)
         if self.discovered_servers:
-            message = f"Found {len(self.discovered_servers)} SMB server(s) on LAN."
+            total = len(self.discovered_servers)
+            message = f"Found {total} SMB server(s) on LAN."
             if self.hostname_resolution_failures:
-                message += " Hostnames could not be resolved for some servers; IP-only entries are normal."
+                if self.hostname_resolution_failures >= total:
+                    message += " Using IP addresses only; servers did not advertise hostnames via DNS/NetBIOS, which is common on some home networks."
+                else:
+                    message += " Some servers did not advertise hostnames; those entries are shown as IP addresses."
+
+                # Append a compact per-IP summary of hostname lookup issues.
+                problems: list[str] = []
+                for ip, detail in self.hostname_resolution_detail.items():
+                    problems.append(f"{ip}: {detail}")
+                if problems:
+                    joined = " | ".join(problems)
+                    message += f" Hostname details: {joined}."
+
             self.set_status(message)
         else:
             self.set_status("No SMB servers found on LAN.")

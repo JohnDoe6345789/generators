@@ -1,4 +1,4 @@
-
+#!/opt/homebrew/bin/python3
 """
 Simple Samba share browser with Tkinter GUI.
 

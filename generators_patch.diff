@@ -1,0 +1,150 @@
+diff --git a/bootstrapmacsetup.sh b/bootstrapmacsetup.sh
+index 0000000..1111111 100644
+--- a/bootstrapmacsetup.sh
++++ b/bootstrapmacsetup.sh
+@@
+ #!/usr/bin/env bash
+ #
+ # Bootstrap script for the macOS App Installer GUI.
+ # - Ensures Homebrew is installed
+ # - Ensures a modern python3 is installed
+ # - Prefers non‑Xcode/CLT Python (brew/python.org) to avoid old Tk crashes
+ # - Runs the Tkinter GUI installer script
+ #
+ # Make executable:  chmod +x bootstrapmacsetup.sh
+ # Run:             ./bootstrapmacsetup.sh
+
+ set -euo pipefail
+
+ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ PY_SCRIPT="${SCRIPT_DIR}/mac_app_installer.py"
+
+ # Default Python command.  This will be overwritten by ensure_python if
+ # a better interpreter is found on the system.
+ PYTHON_CMD="python3"
+
+@@
+ ensure_brew() {
+@@
+ }
+
+ ensure_python() {
+     # Always prefer Homebrew python3 and install it if missing.
+     ensure_brew
+
+     # Apple Silicon default location
+     if [ -x /opt/homebrew/bin/python3 ]; then
+         PYTHON_CMD="/opt/homebrew/bin/python3"
+         return 0
+     fi
+
+     # Intel or other Homebrew location
+     if [ -x /usr/local/bin/python3 ]; then
+         PYTHON_CMD="/usr/local/bin/python3"
+         return 0
+     fi
+
+     echo "[*] Homebrew python3 not found, installing via Homebrew…"
+     brew install python
+
+     # Try again after install
+     if [ -x /opt/homebrew/bin/python3 ]; then
+         PYTHON_CMD="/opt/homebrew/bin/python3"
+         return 0
+     fi
+     if [ -x /usr/local/bin/python3 ]; then
+         PYTHON_CMD="/usr/local/bin/python3"
+         return 0
+     fi
+
+     # Fallback to whatever python3 exists, but warn the user
+     if command -v python3 >/dev/null 2>&1; then
+         PYTHON_CMD="$(command -v python3)"
+         echo "[!] Falling back to ${PYTHON_CMD} (may use old Tk and crash)." >&2
+         return 0
+     fi
+
+     echo "[!] python3 still not found after install." >&2
+     exit 1
+ }
+
+ run_gui() {
+@@
+     ensure_python
+
+     echo "[*] Using Python: ${PYTHON_CMD}"
+     echo "[*] Launching macOS App Installer GUI…"
+     "${PYTHON_CMD}" "${PY_SCRIPT}"
+ }
+
+diff --git a/mac_app_installer.py b/mac_app_installer.py
+index 0000000..2222222 100644
+--- a/mac_app_installer.py
++++ b/mac_app_installer.py
+@@
+ from __future__ import annotations
+
+ import subprocess
+ import sys
+ from typing import List, Tuple
++import shutil  # for brew detection
+
+ import tkinter as tk
+ from tkinter import messagebox
+
+@@
+-def run_command(args: List[str]) -> int:
+-    """Run a command and return its exit code."""
+-    try:
+-        # Wrap commands with AppleScript elevation prompt
+-        esc = ' '.join(args)
+-        osa = [
+-            "osascript", "-e",
+-            f'do shell script "{esc}" with administrator privileges'
+-        ]
+-        result = subprocess.run(osa, check=False)
+-    except OSError:
+-        return 1
+-    return result.returncode(args)
+-    """Run a command and return its exit code."""
+-    try:
+-        result = subprocess.run(args, check=False)
+-    except OSError:
+-        return 1
+-    return result.returncode
+def run_command(args: List[str]) -> int:
+    """Run a command and return its exit code."""
+    try:
+        result = subprocess.run(args, check=False)
+    except OSError:
+        return 1
+    return result.returncode
+
+@@
+-def brew_exists() -> bool:
+-    """Check if Homebrew is installed."""
+-    return run_command(["which", "brew"]) == 0
+def brew_exists() -> bool:
+    """Check if Homebrew is installed."""
+    return shutil.which("brew") is not None
+
+@@
+-def install_brew() -> bool:
+-    """Install Homebrew if missing."""
+-    if brew_exists():
+-        return True
+-    script = (
+-        "\"$(curl -fsSL "
+-        "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh""")"
+-    )
+-    code = run_command(["/bin/bash", "-c", script])
+-    return code == 0
+def install_brew() -> bool:
+    """Install Homebrew if missing."""
+    if brew_exists():
+        return True
+    # Install Homebrew using the official install script
+    cmd = ["/bin/bash", "-c",
+           "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"]
+    result = run_command(cmd)
+    return result == 0

@@ -3,8 +3,12 @@
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from typing import List, Tuple
@@ -283,11 +287,8 @@ class TestJigsawBoardGenerator(unittest.TestCase):
     
     def test_save_scad_file(self):
         """Test that SCAD file can be saved."""
-        import tempfile
-        import os
-        
         self.gen.find_safe_tab_positions(num_tabs_per_seam=2)
-        
+
         with tempfile.NamedTemporaryFile(mode='w', suffix='.scad', delete=False) as f:
             temp_path = f.name
         
@@ -402,6 +403,64 @@ class TestEdgeCases(unittest.TestCase):
         # Should still find some positions or zero if too dense
         self.assertGreaterEqual(num_vert, 0)
         self.assertGreaterEqual(num_horz, 0)
+
+
+class TestEndToEndExecution(unittest.TestCase):
+    """End-to-end coverage of the script entry point."""
+
+    @unittest.skipUnless(shutil.which("openscad"), "OpenSCAD CLI is required for this test")
+    def test_full_script_generates_scad_file(self):
+        """Run the generator script via subprocess and render it with OpenSCAD."""
+        script_path = SRC_DIR / "generators" / "jigsaw_generator.py"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = os.environ.copy()
+            existing_path = env.get("PYTHONPATH", "")
+            env["PYTHONPATH"] = (
+                f"{SRC_DIR}{os.pathsep}{existing_path}" if existing_path else str(SRC_DIR)
+            )
+
+            result = subprocess.run(
+                [sys.executable, str(script_path)],
+                cwd=tmpdir,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(
+                result.returncode,
+                0,
+                msg=f"Script failed with stderr:\n{result.stderr}",
+            )
+
+            output_path = Path(tmpdir) / "jigsaw_board.scad"
+            self.assertTrue(output_path.exists(), "Script did not produce SCAD file")
+
+            content = output_path.read_text()
+            self.assertIn("Auto-generated jigsaw board split", content)
+            self.assertIn("color(\"red\")", content)
+
+            rendered_path = Path(tmpdir) / "jigsaw_board_preview.stl"
+            render = subprocess.run(
+                [shutil.which("openscad"), "-o", str(rendered_path), str(output_path)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(
+                render.returncode,
+                0,
+                msg=(
+                    "OpenSCAD failed to render output.\n"
+                    f"stdout:\n{render.stdout}\n"
+                    f"stderr:\n{render.stderr}"
+                ),
+            )
+            self.assertTrue(rendered_path.exists(), "OpenSCAD did not write an output file")
+            self.assertGreater(rendered_path.stat().st_size, 0, "Rendered file is empty")
     
     def test_requesting_more_tabs_than_possible(self):
         """Test requesting more tabs than space allows."""
@@ -423,10 +482,11 @@ def run_tests():
     # Create test suite
     loader = unittest.TestLoader()
     suite = unittest.TestSuite()
-    
+
     suite.addTests(loader.loadTestsFromTestCase(TestJigsawBoardGenerator))
     suite.addTests(loader.loadTestsFromTestCase(TestOpenSCADFramework))
     suite.addTests(loader.loadTestsFromTestCase(TestEdgeCases))
+    suite.addTests(loader.loadTestsFromTestCase(TestEndToEndExecution))
     
     # Run tests
     runner = unittest.TextTestRunner(verbosity=2)

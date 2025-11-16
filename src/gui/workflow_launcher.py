@@ -17,7 +17,7 @@ import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
 from tkinter import ttk
-from typing import List, Sequence
+from typing import Dict, List, Sequence
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = ROOT_DIR / "scripts"
@@ -36,6 +36,14 @@ class CommandSpec:
     label: str
     command: List[str]
     description: str
+
+
+@dataclass(frozen=True)
+class ScriptParameter:
+    """Represent a positional argument defined by a helper script."""
+
+    label: str
+    required: bool
 
 
 def _platform_suffixes() -> Sequence[str]:
@@ -111,6 +119,65 @@ def discover_helper_scripts() -> List[Path]:
         if path.is_file() and path.suffix in suffixes
     ]
     return sorted(matches, key=lambda path: path.name.lower())
+
+
+def parse_usage_parameters(usage_line: str) -> List[ScriptParameter]:
+    """Extract positional parameters described on a ``Usage:`` line."""
+
+    usage = usage_line.strip()
+    if not usage.lower().startswith("usage:"):
+        return []
+    _, remainder = usage.split(":", 1)
+    parts = remainder.strip().split()
+    if len(parts) <= 1:
+        return []
+    tokens = parts[1:]
+    parameters: List[ScriptParameter] = []
+    for token in tokens:
+        stripped = token.strip()
+        if not stripped:
+            continue
+        optional = stripped.startswith("[") and stripped.endswith("]")
+        cleaned = stripped.strip("[]<>")
+        if not cleaned or cleaned.startswith("-"):
+            continue
+        label = cleaned.replace("_", " ").title()
+        parameters.append(ScriptParameter(label=label, required=not optional))
+    return parameters
+
+
+def _script_usage_output(script: Path) -> str | None:
+    """Return the stdout produced by the script's help flag, if any."""
+
+    help_flags = ("--help", "-h")
+    for flag in help_flags:
+        try:
+            completed = subprocess.run(
+                _command_for_script(script, flag),
+                cwd=str(ROOT_DIR),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except OSError:
+            return None
+        if completed.returncode == 0 and completed.stdout:
+            return completed.stdout
+    return None
+
+
+def script_parameters(script: Path) -> List[ScriptParameter]:
+    """Detect positional parameters for ``script`` via its help output."""
+
+    output = _script_usage_output(script)
+    if not output:
+        return []
+    for line in output.splitlines():
+        if line.lower().startswith("usage:"):
+            return parse_usage_parameters(line)
+    return []
 
 
 class ConsolePane(ttk.Frame):
@@ -209,6 +276,8 @@ class WorkflowLauncher(tk.Tk):
         self.status_var = tk.StringVar(value="Idle")
         self.console = ConsolePane(self)
         self.runner = CommandRunner(self.console, self.status_var)
+        self._parameter_cache: Dict[Path, List[ScriptParameter]] = {}
+        self._param_entries: List[tuple[ScriptParameter, tk.StringVar]] = []
         self._build_layout()
 
     def _build_layout(self) -> None:
@@ -250,6 +319,10 @@ class WorkflowLauncher(tk.Tk):
         self._script_lookup = {path.name: path for path in scripts}
         self.listbox = tk.Listbox(frame, listvariable=self.script_var, height=8)
         self.listbox.pack(fill="both", expand=True, pady=(0, 8))
+        self.listbox.bind("<<ListboxSelect>>", self._on_script_selected)
+        self.param_frame = ttk.LabelFrame(frame, text="Parameters")
+        self.param_frame.pack(fill="x", pady=(0, 8))
+        self._set_param_message("Select a script to view parameters.")
         run_btn = ttk.Button(frame, text="Run selected", command=self._run_selected)
         run_btn.pack(fill="x")
 
@@ -265,8 +338,68 @@ class WorkflowLauncher(tk.Tk):
         if not script:
             self.console.write("Script missing on disk.\n")
             return
-        command = _command_for_script(script)
+        args: List[str] = []
+        for param, var in self._param_entries:
+            value = var.get().strip()
+            if not value and param.required:
+                self.console.write(
+                    f"Parameter '{param.label}' is required before running.\n"
+                )
+                return
+            if value:
+                args.append(value)
+        command = _command_for_script(script, *args)
         self.runner.run(command)
+
+    def _set_param_message(self, message: str) -> None:
+        """Display ``message`` in the parameter frame and clear entries."""
+
+        for widget in self.param_frame.winfo_children():
+            widget.destroy()
+        label = ttk.Label(self.param_frame, text=message, wraplength=320)
+        label.pack(fill="x", padx=4, pady=4)
+        self._param_entries = []
+
+    def _on_script_selected(self, event: tk.Event[tk.Listbox]) -> None:  # type: ignore[name-defined]
+        """Update parameter fields when the selection changes."""
+
+        selection = self.listbox.curselection()
+        if not selection:
+            self._set_param_message("Select a script to view parameters.")
+            return
+        name = self.listbox.get(selection[0])
+        script = self._script_lookup.get(name)
+        if not script:
+            self._set_param_message("Script missing on disk.")
+            return
+        params = self._parameter_cache.get(script)
+        if params is None:
+            params = script_parameters(script)
+            self._parameter_cache[script] = params
+        if not params:
+            self._set_param_message("No parameters detected for this script.")
+            return
+        self._populate_param_entries(params)
+
+    def _populate_param_entries(self, params: List[ScriptParameter]) -> None:
+        """Create entry widgets for ``params`` and store their variables."""
+
+        for widget in self.param_frame.winfo_children():
+            widget.destroy()
+        entries: List[tuple[ScriptParameter, tk.StringVar]] = []
+        for param in params:
+            row = ttk.Frame(self.param_frame)
+            row.pack(fill="x", padx=4, pady=4)
+            label_text = f"{param.label}"
+            if param.required:
+                label_text += " *"
+            label = ttk.Label(row, text=label_text)
+            label.pack(anchor="w")
+            var = tk.StringVar()
+            entry = ttk.Entry(row, textvariable=var)
+            entry.pack(fill="x")
+            entries.append((param, var))
+        self._param_entries = entries
 
     def _build_status_bar(self) -> None:
         """Display the current run status."""

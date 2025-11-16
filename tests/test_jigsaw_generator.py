@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,102 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from generators.jigsaw_generator import JigsawBoardGenerator
+
+
+def load_stl_triangles(path: Path) -> List[Tuple[Tuple[float, float, float], ...]]:
+    """Load triangle vertices from a binary or ASCII STL file."""
+
+    data = path.read_bytes()
+    header = data[:5].lower()
+
+    if header.startswith(b"solid") and b"facet" in data[:200]:
+        # ASCII STL
+        vertices: List[Tuple[float, float, float]] = []
+        triangles: List[Tuple[Tuple[float, float, float], ...]] = []
+        for line in data.decode("utf-8", errors="ignore").splitlines():
+            line = line.strip()
+            if line.startswith("vertex"):
+                parts = line.split()
+                vertices.append(tuple(float(p) for p in parts[1:4]))
+                if len(vertices) == 3:
+                    triangles.append(tuple(vertices))
+                    vertices = []
+        return triangles
+
+    # Binary STL
+    triangles = []
+    tri_count = struct.unpack_from("<I", data, 80)[0]
+    offset = 84
+    record_size = 50
+    for _ in range(tri_count):
+        chunk = data[offset:offset + record_size]
+        v1 = struct.unpack_from("<3f", chunk, 12)
+        v2 = struct.unpack_from("<3f", chunk, 24)
+        v3 = struct.unpack_from("<3f", chunk, 36)
+        triangles.append((tuple(v1), tuple(v2), tuple(v3)))
+        offset += record_size
+    return triangles
+
+
+def compute_bounding_box(triangles: List[Tuple[Tuple[float, float, float], ...]]) -> Tuple[
+    Tuple[float, float, float], Tuple[float, float, float]
+]:
+    """Compute axis-aligned bounding box from STL triangle vertices."""
+
+    xs = [v[0] for tri in triangles for v in tri]
+    ys = [v[1] for tri in triangles for v in tri]
+    zs = [v[2] for tri in triangles for v in tri]
+    return (min(xs), min(ys), min(zs)), (max(xs), max(ys), max(zs))
+
+
+def _vec_sub(a, b):
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+
+def _vec_cross(a, b):
+    return (
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    )
+
+
+def _vec_dot(a, b):
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _ray_triangle_intersection(origin, direction, tri, eps=1e-8):
+    v0, v1, v2 = tri
+    edge1 = _vec_sub(v1, v0)
+    edge2 = _vec_sub(v2, v0)
+    h = _vec_cross(direction, edge2)
+    a = _vec_dot(edge1, h)
+    if -eps < a < eps:
+        return None
+    f = 1.0 / a
+    s = _vec_sub(origin, v0)
+    u = f * _vec_dot(s, h)
+    if u < 0.0 or u > 1.0:
+        return None
+    q = _vec_cross(s, edge1)
+    v = f * _vec_dot(direction, q)
+    if v < 0.0 or u + v > 1.0:
+        return None
+    t = f * _vec_dot(edge2, q)
+    if t > eps:
+        return t
+    return None
+
+
+def cast_ray(triangles, origin, direction):
+    """Return sorted intersection distances for a ray against the STL triangles."""
+
+    hits = []
+    for tri in triangles:
+        hit = _ray_triangle_intersection(origin, direction, tri)
+        if hit is not None:
+            hits.append(hit)
+    return sorted(hits)
 
 
 class TestJigsawBoardGenerator(unittest.TestCase):
@@ -408,59 +505,106 @@ class TestEdgeCases(unittest.TestCase):
 class TestEndToEndExecution(unittest.TestCase):
     """End-to-end coverage of the script entry point."""
 
+    @staticmethod
+    def _render_fixture(tmpdir: str) -> Tuple[Path, Path]:
+        """Run the generator script and render it to STL via OpenSCAD."""
+        script_path = SRC_DIR / "generators" / "jigsaw_generator.py"
+
+        env = os.environ.copy()
+        existing_path = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = (
+            f"{SRC_DIR}{os.pathsep}{existing_path}" if existing_path else str(SRC_DIR)
+        )
+
+        result = subprocess.run(
+            [sys.executable, str(script_path)],
+            cwd=tmpdir,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        if result.returncode != 0:
+            raise AssertionError(
+                "Script failed with stderr:\n" f"{result.stderr}\nstdout:\n{result.stdout}"
+            )
+
+        output_path = Path(tmpdir) / "jigsaw_board.scad"
+        if not output_path.exists():
+            raise AssertionError("Script did not produce SCAD file")
+
+        rendered_path = Path(tmpdir) / "jigsaw_board_preview.stl"
+        render = subprocess.run(
+            [shutil.which("openscad"), "-o", str(rendered_path), str(output_path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        if render.returncode != 0:
+            raise AssertionError(
+                "OpenSCAD failed to render output.\n"
+                f"stdout:\n{render.stdout}\n"
+                f"stderr:\n{render.stderr}"
+            )
+
+        if not rendered_path.exists():
+            raise AssertionError("OpenSCAD did not write an output file")
+
+        return output_path, rendered_path
+
     @unittest.skipUnless(shutil.which("openscad"), "OpenSCAD CLI is required for this test")
     def test_full_script_generates_scad_file(self):
         """Run the generator script via subprocess and render it with OpenSCAD."""
-        script_path = SRC_DIR / "generators" / "jigsaw_generator.py"
-
         with tempfile.TemporaryDirectory() as tmpdir:
-            env = os.environ.copy()
-            existing_path = env.get("PYTHONPATH", "")
-            env["PYTHONPATH"] = (
-                f"{SRC_DIR}{os.pathsep}{existing_path}" if existing_path else str(SRC_DIR)
-            )
-
-            result = subprocess.run(
-                [sys.executable, str(script_path)],
-                cwd=tmpdir,
-                env=env,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-
-            self.assertEqual(
-                result.returncode,
-                0,
-                msg=f"Script failed with stderr:\n{result.stderr}",
-            )
-
-            output_path = Path(tmpdir) / "jigsaw_board.scad"
-            self.assertTrue(output_path.exists(), "Script did not produce SCAD file")
+            output_path, rendered_path = self._render_fixture(tmpdir)
 
             content = output_path.read_text()
             self.assertIn("Auto-generated jigsaw board split", content)
             self.assertIn("color(\"red\")", content)
 
-            rendered_path = Path(tmpdir) / "jigsaw_board_preview.stl"
-            render = subprocess.run(
-                [shutil.which("openscad"), "-o", str(rendered_path), str(output_path)],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-
-            self.assertEqual(
-                render.returncode,
-                0,
-                msg=(
-                    "OpenSCAD failed to render output.\n"
-                    f"stdout:\n{render.stdout}\n"
-                    f"stderr:\n{render.stderr}"
-                ),
-            )
-            self.assertTrue(rendered_path.exists(), "OpenSCAD did not write an output file")
             self.assertGreater(rendered_path.stat().st_size, 0, "Rendered file is empty")
+
+    @unittest.skipUnless(shutil.which("openscad"), "OpenSCAD CLI is required for this test")
+    def test_rendered_geometry_has_expected_layout(self):
+        """Raycast the generated STL to ensure the four-tile layout renders correctly."""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _, rendered_path = self._render_fixture(tmpdir)
+
+            triangles = load_stl_triangles(rendered_path)
+            self.assertGreater(len(triangles), 0, "Rendered STL did not contain any triangles")
+
+            bbox_min, bbox_max = compute_bounding_box(triangles)
+
+            board_w = 243.84
+            board_h = 243.84
+            board_t = 3.0
+            bed_spacing = 300
+
+            self.assertAlmostEqual(bbox_min[0], 0.0, delta=0.1)
+            self.assertAlmostEqual(bbox_min[1], 0.0, delta=0.1)
+            self.assertAlmostEqual(bbox_min[2], 0.0, delta=0.1)
+            self.assertAlmostEqual(bbox_max[2], board_t, delta=0.1)
+            self.assertAlmostEqual(bbox_max[0], board_w + bed_spacing, delta=0.1)
+            self.assertAlmostEqual(bbox_max[1], board_h + bed_spacing, delta=0.1)
+
+            def cast_at(x, y):
+                origin = (x, y, -10.0)
+                direction = (0.0, 0.0, 1.0)
+                return len(cast_ray(triangles, origin, direction))
+
+            mid_x = board_w / 2
+            mid_y = board_h / 2
+
+            hits_tile_a = cast_at(mid_x / 2, mid_y / 2)
+            hits_tile_b = cast_at(bed_spacing + (mid_x + board_w) / 2, mid_y / 2)
+            hits_gap = cast_at(board_w + 10, mid_y / 2)
+
+            self.assertEqual(hits_tile_a, 2, "Tile A center should produce exactly two intersections")
+            self.assertEqual(hits_tile_b, 2, "Tile B center should produce exactly two intersections")
+            self.assertEqual(hits_gap, 0, "Gap between tiles should not intersect the mesh")
     
     def test_requesting_more_tabs_than_possible(self):
         """Test requesting more tabs than space allows."""

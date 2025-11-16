@@ -1,70 +1,29 @@
-"""In-house STEP utilities derived from OpenCascade primitives."""
+"""Pure-Python STEP utilities derived from OpenCascade primitives."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isclose
 from pathlib import Path
-from types import SimpleNamespace
-from typing import List, Sequence, Tuple
+from typing import Dict, Iterable, List, Sequence, Tuple
 
-_OCP: SimpleNamespace | None = None
-_OCP_ERROR: ModuleNotFoundError | None = None
+try:  # pragma: no cover - import guard
+    from steputils.p21 import Enumeration, Reference, load
+except ModuleNotFoundError as exc:  # pragma: no cover - explicit error path
+    raise ModuleNotFoundError(
+        "STEP tessellation requires the 'steputils' package. Install it via 'pip install steputils'."
+    ) from exc
 
-
-def _require_ocp() -> SimpleNamespace:
-    """Return cached OpenCascade bindings, importing them on demand."""
-
-    global _OCP, _OCP_ERROR
-    if _OCP is not None:
-        return _OCP
-    if _OCP_ERROR is not None:
-        raise ModuleNotFoundError(
-            "STEP tessellation requires the 'OCP' package. Install it via 'pip install OCP'."
-        ) from _OCP_ERROR
-    try:  # pragma: no cover - exercised through downstream helpers
-        from OCP.BRep import BRep_Builder, BRep_Tool
-        from OCP.BRepGProp import brepgprop_VolumeProperties
-        from OCP.BRepMesh import BRepMesh_IncrementalMesh
-        from OCP.GProp import GProp_GProps
-        from OCP.IFSelect import IFSelect_RetDone
-        from OCP.Poly import Poly_Triangle
-        from OCP.STEPControl import STEPControl_Reader
-        from OCP.TopAbs import TopAbs_FACE, TopAbs_SOLID
-        from OCP.TopExp import TopExp_Explorer
-        from OCP.TopLoc import TopLoc_Location
-        from OCP.TopoDS import TopoDS_Compound, TopoDS_Shape, topods_Face, topods_Solid
-    except ModuleNotFoundError as exc:  # pragma: no cover - import guard
-        _OCP_ERROR = exc
-        raise ModuleNotFoundError(
-            "STEP tessellation requires the 'OCP' package. Install it via 'pip install OCP'."
-        ) from exc
-
-    _OCP = SimpleNamespace(
-        BRep_Builder=BRep_Builder,
-        BRepMesh_IncrementalMesh=BRepMesh_IncrementalMesh,
-        BRep_Tool=BRep_Tool,
-        IFSelect_RetDone=IFSelect_RetDone,
-        Poly_Triangle=Poly_Triangle,
-        STEPControl_Reader=STEPControl_Reader,
-        TopAbs_FACE=TopAbs_FACE,
-        TopAbs_SOLID=TopAbs_SOLID,
-        TopExp_Explorer=TopExp_Explorer,
-        TopLoc_Location=TopLoc_Location,
-        TopoDS_Compound=TopoDS_Compound,
-        TopoDS_Shape=TopoDS_Shape,
-        brepgprop_VolumeProperties=brepgprop_VolumeProperties,
-        topods_Face=topods_Face,
-        topods_Solid=topods_Solid,
-        GProp_GProps=GProp_GProps,
-    )
-    return _OCP
+Point = Tuple[float, float, float]
+Triangle = Tuple[Point, Point, Point]
 
 
 @dataclass(slots=True)
 class StepSolid:
-    """Thin wrapper exposing the solid volume."""
+    """Thin wrapper exposing the tessellated solid volume."""
 
-    shape: "TopoDS_Shape"
+    name: str
+    triangles: List[Triangle]
     volume: float
 
     def Volume(self) -> float:
@@ -72,86 +31,242 @@ class StepSolid:
 
 
 class StepBackend:
-    """High level façade for loading and meshing STEP solids."""
+    """High level façade for loading and meshing STEP solids without OCP."""
 
     def load_solids(self, step_path: str | Path) -> List[StepSolid]:
-        modules = _require_ocp()
-        reader = modules.STEPControl_Reader()
-        status = reader.ReadFile(str(step_path))
-        if status != modules.IFSelect_RetDone:
-            raise ValueError(f"Unable to load STEP file: {step_path}")
-
-        for root in range(1, reader.NbRootsForTransfer() + 1):
-            reader.TransferRoot(root)
-
-        solids: List[StepSolid] = []
-        for index in range(1, reader.NbShapes() + 1):
-            shape = reader.Shape(index)
-            explorer = modules.TopExp_Explorer(shape, modules.TopAbs_SOLID)
-            while explorer.More():
-                solid = modules.topods_Solid(explorer.Current())
-                volume = self._solid_volume(solid)
-                solids.append(StepSolid(shape=solid, volume=volume))
-                explorer.Next()
+        model = _StepModel.from_file(step_path)
+        solids = list(model.iter_solids())
+        if not solids:
+            raise ValueError(f"Unable to extract solids from STEP file: {step_path}")
         return solids
 
-    def make_compound(self, solids: Sequence[StepSolid]):
-        modules = _require_ocp()
-        builder = modules.BRep_Builder()
-        compound = modules.TopoDS_Compound()
-        builder.MakeCompound(compound)
-        for solid in solids:
-            builder.Add(compound, solid.shape)
-        return compound
+    def make_compound(self, solids: Sequence[StepSolid]) -> List[StepSolid]:
+        return list(solids)
 
     def tessellate(
         self,
-        compound,
+        compound: Sequence[StepSolid],
         angular_tolerance: float,
         linear_tolerance: float,
     ) -> Tuple[List[List[float]], List[List[int]]]:
-        modules = _require_ocp()
-        modules.BRepMesh_IncrementalMesh(compound, linear_tolerance, False, angular_tolerance, True)
-
-        explorer = modules.TopExp_Explorer(compound, modules.TopAbs_FACE)
-        vertex_lookup: dict[Tuple[float, float, float], int] = {}
+        vertex_lookup: Dict[Tuple[float, float, float], int] = {}
         vertices: List[List[float]] = []
         faces: List[List[int]] = []
 
-        while explorer.More():
-            face = modules.topods_Face(explorer.Current())
-            loc = modules.TopLoc_Location()
-            triangulation = modules.BRep_Tool.Triangulation(face, loc)
-            explorer.Next()
-            if triangulation is None:
-                continue
-
-            transform = loc.Transformation()
-            node_indices = [0] * (triangulation.NbNodes() + 1)
-            nodes = triangulation.Nodes()
-            for idx in range(1, triangulation.NbNodes() + 1):
-                point = nodes.Value(idx).Transformed(transform)
-                coords = (point.X(), point.Y(), point.Z())
-                key = (round(coords[0], 9), round(coords[1], 9), round(coords[2], 9))
-                if key not in vertex_lookup:
-                    vertex_lookup[key] = len(vertices)
-                    vertices.append([coords[0], coords[1], coords[2]])
-                node_indices[idx] = vertex_lookup[key]
-
-            triangles = triangulation.Triangles()
-            for idx in range(1, triangulation.NbTriangles() + 1):
-                tri: Poly_Triangle = triangles.Value(idx)
-                a, b, c = tri.Get()
-                faces.append([node_indices[a], node_indices[b], node_indices[c]])
+        for solid in compound:
+            for tri in solid.triangles:
+                indices: List[int] = []
+                for coords in tri:
+                    key = _rounded(coords)
+                    if key not in vertex_lookup:
+                        vertex_lookup[key] = len(vertices)
+                        vertices.append([coords[0], coords[1], coords[2]])
+                    indices.append(vertex_lookup[key])
+                if len({indices[0], indices[1], indices[2]}) == 3:
+                    faces.append(indices)
 
         return vertices, faces
 
     @staticmethod
-    def _solid_volume(shape) -> float:
-        modules = _require_ocp()
-        props = modules.GProp_GProps()
-        modules.brepgprop_VolumeProperties(shape, props)
-        return float(props.Mass())
+    def _solid_volume(triangles: Iterable[Triangle]) -> float:
+        volume = 0.0
+        for tri in triangles:
+            volume += _signed_tetra_volume(tri)
+        return abs(volume)
+
+
+class _StepModel:
+    """Helper that indexes STEP entities and exposes solid iterators."""
+
+    def __init__(self, entities: Dict[str, _Entity]) -> None:
+        self._entities = entities
+
+    @classmethod
+    def from_file(cls, step_path: str | Path) -> "_StepModel":
+        path = Path(step_path)
+        with path.open("r", encoding="utf-8", errors="ignore") as stream:
+            step_file = load(stream)
+        entities: Dict[str, _Entity] = {}
+        for section in step_file.data:
+            for ref, instance in getattr(section, "instances", {}).items():
+                entity = getattr(instance, "entity", None)
+                if entity is None:
+                    continue
+                entities[ref] = entity
+        return cls(entities)
+
+    def iter_solids(self) -> Iterable[StepSolid]:
+        for ref, entity in self._entities.items():
+            if entity.name != "MANIFOLD_SOLID_BREP":
+                continue
+            name = entity.params[0] or ref
+            shell_ref = _as_reference(entity.params[1])
+            polygons = self._shell_polygons(shell_ref)
+            triangles: List[Triangle] = []
+            for polygon in polygons:
+                triangles.extend(_triangulate(polygon))
+            if not triangles:
+                continue
+            volume = StepBackend._solid_volume(triangles)
+            yield StepSolid(name=name, triangles=triangles, volume=volume)
+
+    def _shell_polygons(self, shell_ref: str) -> List[List[Point]]:
+        shell = self._entity(shell_ref)
+        if shell.name != "CLOSED_SHELL":
+            return []
+        face_refs = _as_references(shell.params[1])
+        polygons: List[List[Point]] = []
+        for face_ref in face_refs:
+            polygons.extend(self._face_polygons(face_ref))
+        return polygons
+
+    def _face_polygons(self, face_ref: str) -> List[List[Point]]:
+        face = self._entity(face_ref)
+        if face.name != "ADVANCED_FACE":
+            return []
+        bound_refs = _as_references(face.params[1])
+        polygons: List[List[Point]] = []
+        for bound_ref in bound_refs:
+            bound = self._entity(bound_ref)
+            if bound.name not in {"FACE_BOUND", "FACE_OUTER_BOUND"}:
+                continue
+            if len(bound.params) < 2:
+                continue
+            if len(bound.params) == 3 and not _as_bool(bound.params[2]):
+                # Ignore inner loops for now to keep the tessellation simple.
+                continue
+            loop_ref = _as_reference(bound.params[1])
+            loop_points = self._loop_points(loop_ref)
+            if len(loop_points) >= 3:
+                polygons.append(loop_points)
+        return polygons
+
+    def _loop_points(self, loop_ref: str) -> List[Point]:
+        loop = self._entity(loop_ref)
+        if loop.name != "EDGE_LOOP":
+            return []
+        oriented_refs = _as_references(loop.params[1])
+        points: List[Point] = []
+        for oriented_ref in oriented_refs:
+            start, end = self._edge_points(oriented_ref)
+            if not points:
+                points.append(start)
+            else:
+                if not _points_close(points[-1], start):
+                    if _points_close(points[-1], end):
+                        start, end = end, start
+                    else:
+                        points.append(start)
+                if _points_close(points[0], end) and len(points) > 2:
+                    continue
+            points.append(end)
+        if len(points) > 2 and _points_close(points[0], points[-1]):
+            points.pop()
+        return points
+
+    def _edge_points(self, oriented_ref: str) -> Tuple[Point, Point]:
+        oriented = self._entity(oriented_ref)
+        if oriented.name != "ORIENTED_EDGE":
+            return ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+        curve_ref = _as_reference(oriented.params[3])
+        curve = self._entity(curve_ref)
+        if curve.name != "EDGE_CURVE":
+            return ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+        start = self._vertex_coords(curve.params[1])
+        end = self._vertex_coords(curve.params[2])
+        if not _as_bool(oriented.params[4]):
+            start, end = end, start
+        return start, end
+
+    def _vertex_coords(self, vertex_ref: str | Reference) -> Point:
+        vertex = self._entity(_as_reference(vertex_ref))
+        if vertex.name != "VERTEX_POINT":
+            return (0.0, 0.0, 0.0)
+        point = self._entity(_as_reference(vertex.params[1]))
+        if point.name != "CARTESIAN_POINT":
+            return (0.0, 0.0, 0.0)
+        coords = point.params[1]
+        return (float(coords[0]), float(coords[1]), float(coords[2]))
+
+    def _entity(self, ref: str) -> _Entity:
+        entity = self._entities.get(ref)
+        if entity is None:
+            raise KeyError(f"Missing STEP entity: {ref}")
+        return entity
+
+
+def _triangulate(points: List[Point]) -> List[Triangle]:
+    if len(points) < 3:
+        return []
+    anchor = points[0]
+    triangles: List[Triangle] = []
+    for idx in range(1, len(points) - 1):
+        triangle = (anchor, points[idx], points[idx + 1])
+        if _triangle_area(triangle) > 1e-9:
+            triangles.append(triangle)
+    return triangles
+
+
+def _triangle_area(triangle: Triangle) -> float:
+    (ax, ay, az), (bx, by, bz), (cx, cy, cz) = triangle
+    ab = (bx - ax, by - ay, bz - az)
+    ac = (cx - ax, cy - ay, cz - az)
+    cross_x = ab[1] * ac[2] - ab[2] * ac[1]
+    cross_y = ab[2] * ac[0] - ab[0] * ac[2]
+    cross_z = ab[0] * ac[1] - ab[1] * ac[0]
+    return 0.5 * (cross_x**2 + cross_y**2 + cross_z**2) ** 0.5
+
+
+def _signed_tetra_volume(triangle: Triangle) -> float:
+    (ax, ay, az), (bx, by, bz), (cx, cy, cz) = triangle
+    volume = (
+        ax * (by * cz - bz * cy)
+        - ay * (bx * cz - bz * cx)
+        + az * (bx * cy - by * cx)
+    ) / 6.0
+    return volume
+
+
+def _rounded(point: Point, digits: int = 9) -> Tuple[float, float, float]:
+    return (round(point[0], digits), round(point[1], digits), round(point[2], digits))
+
+
+def _points_close(a: Point, b: Point, tol: float = 1e-6) -> bool:
+    return isclose(a[0], b[0], abs_tol=tol) and isclose(a[1], b[1], abs_tol=tol) and isclose(a[2], b[2], abs_tol=tol)
+
+
+def _as_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, Enumeration):
+        value = str(value)
+    if isinstance(value, str):
+        text = value.strip().strip(".").lower()
+        if text == "t":
+            return True
+        if text == "f":
+            return False
+    return bool(value)
+
+
+def _as_reference(value: object) -> str:
+    if isinstance(value, Reference):
+        return str(value)
+    if isinstance(value, str):
+        return value
+    raise TypeError(f"Unsupported reference type: {type(value)!r}")
+
+
+def _as_references(value: object) -> List[str]:
+    if isinstance(value, (list, tuple)):
+        return [_as_reference(item) for item in value]
+    try:
+        return [_as_reference(item) for item in list(value)]
+    except TypeError:
+        return [_as_reference(value)]
+
+
+_Entity = object  # Alias for readability; steputils does not expose a stub type.
 
 
 __all__ = ["StepBackend", "StepSolid"]

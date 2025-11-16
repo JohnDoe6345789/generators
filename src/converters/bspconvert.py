@@ -39,6 +39,9 @@ from pathlib import Path
 from typing import List, Tuple, BinaryIO, Iterable
 
 
+logger = logging.getLogger(__name__)
+
+
 # ---------------------------------------------------------------------------
 # Basic data structures
 # ---------------------------------------------------------------------------
@@ -108,7 +111,7 @@ def read_header(f: BinaryIO) -> BSPHeader:
     if ident != BSP_IDENT:
         raise ValueError(f"Not a Source BSP (ident={ident!r})")
     if version != 20:
-        logging.warning(
+        logger.warning(
             "BSP version %s (expected 20 for HL2). "
             "Script may still work but is not guaranteed.",
             version,
@@ -136,7 +139,7 @@ def read_header(f: BinaryIO) -> BSPHeader:
         raise ValueError("Failed to read BSP revision")
     (revision,) = revision_struct.unpack(rev_data)
 
-    logging.info(
+    logger.info(
         "Read BSP header: ident=%s, version=%d, revision=%d",
         ident.decode("ascii", errors="replace"),
         version,
@@ -150,14 +153,14 @@ def read_vertices(f: BinaryIO, header: BSPHeader) -> List[Tuple[float, float, fl
     f.seek(lump.offset)
     vert_struct = struct.Struct("<fff")
     count = lump.length // vert_struct.size
-    logging.info("Reading %d vertices...", count)
+    logger.info("Reading %d vertices...", count)
     vertices: List[Tuple[float, float, float]] = []
     for _ in range(count):
         data = f.read(vert_struct.size)
         if len(data) != vert_struct.size:
             raise ValueError("Failed to read vertex")
         vertices.append(vert_struct.unpack(data))
-    logging.debug("First vertex: %s", vertices[0] if vertices else None)
+    logger.debug("First vertex: %s", vertices[0] if vertices else None)
     return vertices
 
 
@@ -166,7 +169,7 @@ def read_edges(f: BinaryIO, header: BSPHeader) -> List[Tuple[int, int]]:
     f.seek(lump.offset)
     edge_struct = struct.Struct("<HH")
     count = lump.length // edge_struct.size
-    logging.info("Reading %d edges...", count)
+    logger.info("Reading %d edges...", count)
     edges: List[Tuple[int, int]] = []
     for _ in range(count):
         data = f.read(edge_struct.size)
@@ -182,7 +185,7 @@ def read_surfedges(f: BinaryIO, header: BSPHeader) -> List[int]:
     f.seek(lump.offset)
     surfedge_struct = struct.Struct("<i")
     count = lump.length // surfedge_struct.size
-    logging.info("Reading %d surfedges...", count)
+    logger.info("Reading %d surfedges...", count)
     surfedges: List[int] = []
     for _ in range(count):
         data = f.read(surfedge_struct.size)
@@ -225,7 +228,7 @@ def read_faces(f: BinaryIO, header: BSPHeader) -> List[Face]:
     face_struct = struct.Struct("<HBBihhhh4bif2i2iiHHI")
 
     count = lump.length // face_struct.size
-    logging.info("Reading %d faces...", count)
+    logger.info("Reading %d faces...", count)
 
     faces: List[Face] = []
     for _ in range(count):
@@ -330,7 +333,7 @@ def _print_progress(
     width: int = 40,
 ) -> None:
     """
-    Print a simple progress bar to stderr.
+    Render a simple progress bar to stderr without disrupting logging output.
     """
     if total <= 0:
         return
@@ -339,7 +342,8 @@ def _print_progress(
     bar = "#" * filled + "-" * (width - filled)
     percent = ratio * 100.0
     msg = f"\r[{bar}] {percent:5.1f}% ({current}/{total})"
-    print(msg, end="", file=sys.stderr, flush=True)
+    sys.stderr.write(msg)
+    sys.stderr.flush()
 
 
 def build_triangles(
@@ -349,7 +353,7 @@ def build_triangles(
     faces: List[Face],
     show_progress: bool = True,
 ) -> List[Tuple[Tuple[float, float, float], ...]]:
-    logging.info(
+    logger.info(
         "Building triangles from %d faces (displacements skipped)...",
         len(faces),
     )
@@ -377,9 +381,9 @@ def build_triangles(
             _print_progress(idx + 1, total_faces)
 
     if show_progress:
-        print("", file=sys.stderr)
+        sys.stderr.write("\n")
 
-    logging.info("Generated %d triangles.", len(triangles))
+    logger.info("Generated %d triangles.", len(triangles))
     return triangles
 
 
@@ -412,7 +416,7 @@ def write_binary_stl(
     path: Path,
     triangles: List[Tuple[Tuple[float, float, float], ...]],
 ) -> None:
-    logging.info("Writing STL with %d triangles to %s", len(triangles), path)
+    logger.info("Writing STL with %d triangles to %s", len(triangles), path)
     with path.open("wb") as f:
         header_text = "HL2 BSP to STL"
         header = header_text.encode("ascii") + b" " * (80 - len(header_text))
@@ -465,7 +469,7 @@ def configure_logging(debug: bool) -> None:
         level=level,
         format="%(levelname)s: %(message)s",
     )
-    logging.debug("Debug logging enabled.")
+    logger.debug("Debug logging enabled.")
 
 
 def main(argv: List[str]) -> int:
@@ -473,16 +477,16 @@ def main(argv: List[str]) -> int:
     configure_logging(args.debug)
 
     if not args.input_bsp.is_file():
-        logging.error("Input BSP not found: %s", args.input_bsp)
+        logger.error("Input BSP not found: %s", args.input_bsp)
         return 1
 
     output_dir = Path.cwd() / "bsp_to_stl_output"
     output_dir.mkdir(exist_ok=True)
     out_path = output_dir / args.output_stl
 
-    logging.info("Input BSP: %s", args.input_bsp)
-    logging.info("Output STL: %s", out_path)
-    logging.info("Output directory ensured: %s", output_dir)
+    logger.info("Input BSP: %s", args.input_bsp)
+    logger.info("Output STL: %s", out_path)
+    logger.info("Output directory ensured: %s", output_dir)
 
     with args.input_bsp.open("rb") as f:
         header = read_header(f)
@@ -500,14 +504,14 @@ def main(argv: List[str]) -> int:
     )
 
     if not triangles:
-        logging.error(
+        logger.error(
             "No triangles generated. BSP might be unsupported or empty."
         )
         return 1
 
     write_binary_stl(out_path, triangles)
 
-    print(f"Wrote STL with {len(triangles)} triangles to: {out_path}")
+    logger.info("Wrote STL with %d triangles to: %s", len(triangles), out_path)
     return 0
 
 

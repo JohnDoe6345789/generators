@@ -20,7 +20,7 @@ SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from generators.jigsaw_generator import JigsawBoardGenerator
+from generators.jigsaw_generator import GeometryMath, JigsawBoardGenerator
 
 
 logger = logging.getLogger(__name__)
@@ -182,6 +182,22 @@ def cast_ray(triangles, origin, direction):
     return sorted(hits)
 
 
+class TestGeometryMath(unittest.TestCase):
+    """Unit tests for the GeometryMath helper."""
+
+    def test_distance_between_points(self):
+        """The helper returns Euclidean distance for 2D points."""
+
+        self.assertAlmostEqual(GeometryMath.distance((0.0, 0.0), (3.0, 4.0)), 5.0)
+
+    def test_is_within_bounds(self):
+        """Bounds checks support inclusive or exclusive comparisons."""
+
+        self.assertTrue(GeometryMath.is_within(5.0, 0.0, 10.0))
+        self.assertFalse(GeometryMath.is_within(0.0, 0.0, 10.0))
+        self.assertTrue(GeometryMath.is_within(0.0, 0.0, 10.0, inclusive=True))
+
+
 class TestJigsawBoardGenerator(unittest.TestCase):
     """Test suite for the Jigsaw Board Generator."""
     
@@ -266,14 +282,14 @@ class TestJigsawBoardGenerator(unittest.TestCase):
         # Check vertical tabs (at seam x=mid_x) avoid holes
         for y_tab in self.gen.vert_tab_y:
             for hx, hy in self.gen.holes:
-                dist = ((hx - self.gen.mid_x) ** 2 + (hy - y_tab) ** 2) ** 0.5
+                dist = GeometryMath.distance((hx, hy), (self.gen.mid_x, y_tab))
                 self.assertGreaterEqual(dist, min_hole_dist,
                     f"Vertical tab at y={y_tab} too close to hole at ({hx}, {hy})")
-        
+
         # Check horizontal tabs (at seam y=mid_y) avoid holes
         for x_tab in self.gen.horz_tab_x:
             for hx, hy in self.gen.holes:
-                dist = ((hx - x_tab) ** 2 + (hy - self.gen.mid_y) ** 2) ** 0.5
+                dist = GeometryMath.distance((hx, hy), (x_tab, self.gen.mid_y))
                 self.assertGreaterEqual(dist, min_hole_dist,
                     f"Horizontal tab at x={x_tab} too close to hole at ({hx}, {hy})")
     

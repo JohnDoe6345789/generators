@@ -114,6 +114,27 @@ class OpenSCAD:
         return OpenSCAD(f"linear_extrude({', '.join(params)}) {{\n{self.code}\n}}")
 
 
+class GeometryMath:
+    """Utility helpers for common 2D geometric calculations."""
+
+    @staticmethod
+    def distance(point_a: Tuple[float, float], point_b: Tuple[float, float]) -> float:
+        """Return the Euclidean distance between two XY points."""
+
+        ax, ay = point_a
+        bx, by = point_b
+        return ((ax - bx) ** 2 + (ay - by) ** 2) ** 0.5
+
+    @staticmethod
+    def is_within(value: float, lower: float, upper: float,
+                  inclusive: bool = False) -> bool:
+        """Return True if ``value`` lies within the provided bounds."""
+
+        if inclusive:
+            return lower <= value <= upper
+        return lower < value < upper
+
+
 class JigsawBoardGenerator:
     def __init__(self, 
                  board_width: float,
@@ -178,10 +199,10 @@ class JigsawBoardGenerator:
         step = y_range / (num_tabs_per_seam + 1)
         for i in range(1, num_tabs_per_seam + 1):
             y_pos = y_min + i * step
-            
+
             safe = True
             for hx, hy in self.holes:
-                dist = ((hx - self.mid_x) ** 2 + (hy - y_pos) ** 2) ** 0.5
+                dist = GeometryMath.distance((hx, hy), (self.mid_x, y_pos))
                 if dist < min_distance_from_hole:
                     safe = False
                     break
@@ -198,10 +219,10 @@ class JigsawBoardGenerator:
         step = x_range / (num_tabs_per_seam + 1)
         for i in range(1, num_tabs_per_seam + 1):
             x_pos = x_min + i * step
-            
+
             safe = True
             for hx, hy in self.holes:
-                dist = ((hx - x_pos) ** 2 + (hy - self.mid_y) ** 2) ** 0.5
+                dist = GeometryMath.distance((hx, hy), (x_pos, self.mid_y))
                 if dist < min_distance_from_hole:
                     safe = False
                     break
@@ -322,14 +343,14 @@ class JigsawBoardGenerator:
             for y_mid in self.vert_tab_y:
                 # Only create tab if it's within THIS tile's Y range AND not near corners
                 # Must be away from both the tile's own corners AND the global board corners
-                if (y1 + corner_buffer < y_mid < y2 - corner_buffer and
-                    corner_buffer < y_mid < self.board_h - corner_buffer):
+                if (GeometryMath.is_within(y_mid, y1 + corner_buffer, y2 - corner_buffer) and
+                    GeometryMath.is_within(y_mid, corner_buffer, self.board_h - corner_buffer)):
                     male_tabs.append(self._create_vert_male_tab(y_mid))
         else:
             # This tile has female pockets receiving from the LEFT
             for y_mid in self.vert_tab_y:
-                if (y1 + corner_buffer < y_mid < y2 - corner_buffer and
-                    corner_buffer < y_mid < self.board_h - corner_buffer):
+                if (GeometryMath.is_within(y_mid, y1 + corner_buffer, y2 - corner_buffer) and
+                    GeometryMath.is_within(y_mid, corner_buffer, self.board_h - corner_buffer)):
                     subtract_features.append(self._create_vert_female_pocket(y_mid))
         
         # Horizontal seam processing (top/bottom edge at y = mid_y)
@@ -338,14 +359,14 @@ class JigsawBoardGenerator:
             # This tile creates male tabs sticking UP
             for x_mid in self.horz_tab_x:
                 # Only create tab if it's within THIS tile's X range AND not near corners
-                if (x1 + corner_buffer < x_mid < x2 - corner_buffer and
-                    corner_buffer < x_mid < self.board_w - corner_buffer):
+                if (GeometryMath.is_within(x_mid, x1 + corner_buffer, x2 - corner_buffer) and
+                    GeometryMath.is_within(x_mid, corner_buffer, self.board_w - corner_buffer)):
                     male_tabs.append(self._create_horz_male_tab(x_mid))
         else:
             # This tile has female pockets receiving from BELOW
             for x_mid in self.horz_tab_x:
-                if (x1 + corner_buffer < x_mid < x2 - corner_buffer and
-                    corner_buffer < x_mid < self.board_w - corner_buffer):
+                if (GeometryMath.is_within(x_mid, x1 + corner_buffer, x2 - corner_buffer) and
+                    GeometryMath.is_within(x_mid, corner_buffer, self.board_w - corner_buffer)):
                     subtract_features.append(self._create_horz_female_pocket(x_mid))
         
         # Add holes to subtract
@@ -462,7 +483,7 @@ class JigsawBoardGenerator:
         max_steps = int((axis_length / 2) / search_step) + 2
 
         def seam_is_clear(candidate: float) -> bool:
-            if not (clearance < candidate < axis_length - clearance):
+            if not GeometryMath.is_within(candidate, clearance, axis_length - clearance):
                 return False
             for hole in self.holes:
                 if abs(hole[coord_index] - candidate) <= clearance:

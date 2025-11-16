@@ -8,6 +8,11 @@ directory structure so each component is easy to discover:
 docs/        – Style guidance and collected test results.
 scripts/     – Shell helpers for bootstrapping development environments.
 src/         – Python-based generators and supporting modules.
+              ├─ converters/ – Format conversion helpers.
+              ├─ generators/ – Code generators and supporting logic.
+              ├─ gui/        – Desktop helper apps.
+              ├─ installers/ – Packaging and installer utilities.
+              └─ network/    – Samba discovery tools and GUIs.
 assets/      – Shared artwork and other binary resources.
 patches/     – Historical diffs or scaffolding assets.
 tests/       – Unit tests that exercise the Python generators.

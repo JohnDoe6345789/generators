@@ -14,7 +14,7 @@ SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from jigsaw_generator import JigsawBoardGenerator
+from generators.jigsaw_generator import JigsawBoardGenerator
 
 
 class TestJigsawBoardGenerator(unittest.TestCase):
@@ -313,14 +313,14 @@ class TestOpenSCADFramework(unittest.TestCase):
     
     def test_cube_generation(self):
         """Test cube generation."""
-        from jigsaw_generator import OpenSCAD
+        from generators.jigsaw_generator import OpenSCAD
         
         cube = OpenSCAD.cube([10, 20, 30])
         self.assertIn("cube([10,20,30]", str(cube))
     
     def test_cylinder_generation(self):
         """Test cylinder generation."""
-        from jigsaw_generator import OpenSCAD
+        from generators.jigsaw_generator import OpenSCAD
         
         cyl = OpenSCAD.cylinder(h=10, r=5)
         self.assertIn("cylinder(h=10", str(cyl))
@@ -328,7 +328,7 @@ class TestOpenSCADFramework(unittest.TestCase):
     
     def test_translate_operation(self):
         """Test translate transformation."""
-        from jigsaw_generator import OpenSCAD
+        from generators.jigsaw_generator import OpenSCAD
         
         obj = OpenSCAD.cube(10).translate([5, 10, 15])
         code = str(obj)
@@ -337,7 +337,7 @@ class TestOpenSCADFramework(unittest.TestCase):
     
     def test_difference_operation(self):
         """Test boolean difference."""
-        from jigsaw_generator import OpenSCAD
+        from generators.jigsaw_generator import OpenSCAD
         
         base = OpenSCAD.cube(20)
         hole = OpenSCAD.cylinder(h=25, r=5)
@@ -350,7 +350,7 @@ class TestOpenSCADFramework(unittest.TestCase):
     
     def test_union_operation(self):
         """Test boolean union."""
-        from jigsaw_generator import OpenSCAD
+        from generators.jigsaw_generator import OpenSCAD
         
         obj1 = OpenSCAD.cube(10)
         obj2 = OpenSCAD.circle(r=5)  # Use circle instead of sphere (2D framework)
@@ -361,7 +361,7 @@ class TestOpenSCADFramework(unittest.TestCase):
     
     def test_color_operation(self):
         """Test color assignment."""
-        from jigsaw_generator import OpenSCAD
+        from generators.jigsaw_generator import OpenSCAD
         
         obj = OpenSCAD.cube(10).color("red")
         code = str(obj)

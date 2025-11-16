@@ -22,6 +22,22 @@ if str(SRC_DIR) not in sys.path:
 from generators.jigsaw_generator import JigsawBoardGenerator
 
 
+DEFAULT_FULL_BOARD_HOLES: List[List[float]] = [
+    [15.622, 17.011],
+    [15.636, 83.001],
+    [15.777, 203.430],
+    [51.047, 153.540],
+    [51.392, 84.084],
+    [119.883, 84.243],
+    [120.191, 153.376],
+    [161.449, 84.845],
+    [161.481, 223.617],
+    [161.707, 17.120],
+    [200.942, 224.010],
+    [220.455, 83.287],
+]
+
+
 def find_openscad_executable() -> str | None:
     """Return the best-effort path to the OpenSCAD CLI."""
 
@@ -323,8 +339,8 @@ class TestJigsawBoardGenerator(unittest.TestCase):
         self.assertGreater(len(cylinder_matches), 0,
                           "Should generate cylinders for mounting holes")
 
-    def test_holes_touching_vertical_seam_raise(self):
-        """Holes intersecting the vertical seam should be rejected."""
+    def test_vertical_seam_auto_adjusts_around_holes(self):
+        """The vertical seam should slide away from a conflicting hole."""
         seam_hole = [[self.board_w / 2 - 0.5, 25.0]]
         gen = JigsawBoardGenerator(
             board_width=self.board_w,
@@ -334,11 +350,15 @@ class TestJigsawBoardGenerator(unittest.TestCase):
             hole_radius=1.98,
         )
 
-        with self.assertRaisesRegex(ValueError, "vertical seam"):
-            gen.generate_scad()
+        gen.find_safe_tab_positions(num_tabs_per_seam=1)
+        scad = gen.generate_scad()
 
-    def test_holes_touching_horizontal_seam_raise(self):
-        """Holes intersecting the horizontal seam should be rejected."""
+        self.assertNotEqual(gen.mid_x, self.board_w / 2)
+        self.assertGreater(abs(gen.mid_x - seam_hole[0][0]), gen.hole_r)
+        self.assertIn("Auto-generated jigsaw board split", scad)
+
+    def test_horizontal_seam_auto_adjusts_around_holes(self):
+        """The horizontal seam should move when a hole is centered on it."""
         seam_hole = [[25.0, self.board_h / 2 + 0.5]]
         gen = JigsawBoardGenerator(
             board_width=self.board_w,
@@ -348,7 +368,25 @@ class TestJigsawBoardGenerator(unittest.TestCase):
             hole_radius=1.98,
         )
 
-        with self.assertRaisesRegex(ValueError, "horizontal seam"):
+        gen.find_safe_tab_positions(num_tabs_per_seam=1)
+        scad = gen.generate_scad()
+
+        self.assertNotEqual(gen.mid_y, self.board_h / 2)
+        self.assertGreater(abs(gen.mid_y - seam_hole[0][1]), gen.hole_r)
+        self.assertIn("Auto-generated jigsaw board split", scad)
+
+    def test_seam_adjustment_errors_when_no_vertical_path_exists(self):
+        """If every possible vertical seam intersects a hole we still raise."""
+        holes = [[20.0, 10.0], [40.0, 10.0], [60.0, 10.0], [80.0, 10.0]]
+        gen = JigsawBoardGenerator(
+            board_width=100.0,
+            board_height=100.0,
+            board_thickness=3.0,
+            holes=holes,
+            hole_radius=12.0,
+        )
+
+        with self.assertRaisesRegex(ValueError, "vertical seam"):
             gen.generate_scad()
 
     def test_parameter_adjustment(self):
@@ -713,12 +751,29 @@ class TestEndToEndExecution(unittest.TestCase):
             board_t = 3.0
             bed_spacing = 300
 
+            script_gen = JigsawBoardGenerator(
+                board_width=board_w,
+                board_height=board_h,
+                board_thickness=board_t,
+                holes=DEFAULT_FULL_BOARD_HOLES,
+                hole_radius=1.98,
+            )
+            script_gen.find_safe_tab_positions(
+                num_tabs_per_seam=4,
+                min_distance_from_corner=40.0,
+            )
+            seam_x = script_gen.mid_x
+            seam_y = script_gen.mid_y
+            tile_a_center = (seam_x / 2, seam_y / 2, -10.0)
+            tile_b_center_x = bed_spacing + (seam_x + board_w) / 2
+            tile_a_side_origin = (-10.0, seam_y / 2, board_t / 2)
+
             cameras = [
-                ((board_w / 2, board_h / 2, -10.0), (0.0, 0.0, 1.0), True,
-                 "Top-down camera should intersect the center tile"),
-                ((-10.0, board_h / 4, board_t / 2), (1.0, 0.0, 0.0), True,
+                (tile_a_center, (0.0, 0.0, 1.0), True,
+                 "Top-down camera should intersect tile A"),
+                (tile_a_side_origin, (1.0, 0.0, 0.0), True,
                  "Side-on camera along +X should intersect the first column tile"),
-                ((bed_spacing + board_w / 2, -10.0, board_t / 2), (0.0, 1.0, 0.0), True,
+                ((tile_b_center_x, -10.0, board_t / 2), (0.0, 1.0, 0.0), True,
                  "Front-on camera along +Y should intersect the bottom row tile"),
                 ((board_w + 10.0, board_h / 2, board_t / 2), (0.0, 0.0, 1.0), False,
                  "A camera aimed at the spacing gap should see no intersections"),

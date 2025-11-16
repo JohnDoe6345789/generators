@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 from typing import List
 
 import pytest
@@ -15,69 +14,55 @@ from generators.simplyretro_d8_generator import (
 )
 
 
-class FakeVector:
-    """Simple object emulating cadquery.Vector."""
-
-    def __init__(self, x: float, y: float, z: float) -> None:
-        self.x = x
-        self.y = y
-        self.z = z
-
-
 class FakeSolid:
     """Test double providing a Volume method."""
 
     def __init__(self, volume: float) -> None:
         self._volume = volume
 
-    def Volume(self) -> float:  # noqa: N802 - matches cadquery API
+    def Volume(self) -> float:  # noqa: N802 - mimics backend API
         return self._volume
 
 
-class FakeCadQuery:
-    """Minimal cadquery substitute wired into the generator."""
+class FakeBackend:
+    """Minimal in-memory STEP backend used for tests."""
 
-    def __init__(self, solids: List[FakeSolid], vectors, faces) -> None:
+    def __init__(self, solids: List[FakeSolid], vertices, faces) -> None:
         self._solids = solids
-        self._vectors = vectors
+        self._vertices = vertices
         self._faces = faces
         self.selected: List[FakeSolid] = []
         self.imported_path: str | None = None
-        self.importers = SimpleNamespace(importStep=self._import_step)
-        self.Compound = SimpleNamespace(makeCompound=self._make_compound)
+        self.tessellate_args: tuple[float, float] | None = None
 
-    def _import_step(self, path: str):
-        self.imported_path = path
-        return SimpleNamespace(solids=lambda: self._solids)
+    def load_solids(self, path: str):
+        self.imported_path = str(path)
+        return self._solids
 
-    def _make_compound(self, selection: List[FakeSolid]):
+    def make_compound(self, selection: List[FakeSolid]):
         self.selected = selection
-        return SimpleNamespace(tessellate=self._tessellate)
+        return object()
 
-    def _tessellate(self, angular: float, linear: float):  # noqa: D401
-        """Return the supplied tessellation data."""
-
+    def tessellate(self, _compound, angular: float, linear: float):
         self.tessellate_args = (angular, linear)
-        return self._vectors, self._faces
+        return self._vertices, self._faces
 
 
-def test_build_polyhedron_data_filters_solids(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_polyhedron_data_filters_solids() -> None:
     heavy = FakeSolid(volume=150_000)
     tiny = FakeSolid(volume=10)
     vectors = [
-        FakeVector(0.12345, 0.0, 0.0),
-        FakeVector(0.0, 0.99999, 0.0),
-        FakeVector(0.0, 0.0, 0.44444),
+        [0.12345, 0.0, 0.0],
+        [0.0, 0.99999, 0.0],
+        [0.0, 0.0, 0.44444],
     ]
     faces = [(0, 1, 2)]
-    backend = FakeCadQuery(solids=[tiny, heavy], vectors=vectors, faces=faces)
+    backend = FakeBackend(solids=[tiny, heavy], vertices=vectors, faces=faces)
     settings = TessellationSettings(min_volume=50_000, precision=3)
-    generator = SimplyRetroD8Generator(step_path="/tmp/die.step", settings=settings)
-
-    monkeypatch.setattr(
-        SimplyRetroD8Generator,
-        "_require_cadquery",
-        staticmethod(lambda: backend),
+    generator = SimplyRetroD8Generator(
+        step_path="/tmp/die.step",
+        settings=settings,
+        backend=backend,
     )
 
     vertices, face_indices = generator._build_polyhedron_data()

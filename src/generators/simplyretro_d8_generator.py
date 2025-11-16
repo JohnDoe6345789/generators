@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 from generators.openscad_framework import OpenSCAD, OpenSCADScript, StepTessellator
+from generators.step_backend import StepBackend
 
 
 @dataclass(slots=True)
@@ -27,9 +28,11 @@ class SimplyRetroD8Generator:
         self,
         step_path: str | Path | None = None,
         settings: TessellationSettings | None = None,
+        backend: StepBackend | None = None,
     ) -> None:
         self.step_path = Path(step_path or Path("assets") / "simplyRetro D8.step")
         self.settings = settings or TessellationSettings()
+        self._backend = backend
 
     def generate_scad(self) -> str:
         """Return the OpenSCAD document reconstructed from the STEP file."""
@@ -64,6 +67,7 @@ class SimplyRetroD8Generator:
             linear_tolerance=self.settings.linear_tolerance,
             min_volume=self.settings.min_volume,
             precision=self.settings.precision,
+            backend=self._backend,
         )
         return tessellator.tessellate(self.step_path)
 

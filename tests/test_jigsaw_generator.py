@@ -20,7 +20,11 @@ SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from generators.jigsaw_generator import GeometryMath, JigsawBoardGenerator
+from generators.jigsaw_generator import (
+    GeometryMath,
+    JigsawBoardGenerator,
+    beautify_scad_code,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -359,6 +363,14 @@ class TestJigsawBoardGenerator(unittest.TestCase):
         self.assertGreater(len(cylinder_matches), 0,
                           "Should generate cylinders for mounting holes")
 
+    def test_generate_scad_returns_beautified_code(self):
+        """Generated SCAD text should already be prettified."""
+
+        self.gen.find_safe_tab_positions(num_tabs_per_seam=1)
+        scad = self.gen.generate_scad()
+
+        self.assertEqual(scad, beautify_scad_code(scad))
+
     def test_vertical_seam_auto_adjusts_around_holes(self):
         """The vertical seam should slide away from a conflicting hole."""
         seam_hole = [[self.board_w / 2 - 0.5, 25.0]]
@@ -518,22 +530,47 @@ class TestJigsawBoardGenerator(unittest.TestCase):
 
         with tempfile.NamedTemporaryFile(mode='w', suffix='.scad', delete=False) as f:
             temp_path = f.name
-        
+
         try:
             self.gen.save_scad(temp_path)
-            
+
             # Check file exists and has content
             self.assertTrue(os.path.exists(temp_path))
-            
+
             with open(temp_path, 'r') as f:
                 content = f.read()
-            
+
             self.assertGreater(len(content), 0)
             self.assertIn("Auto-generated", content)
         finally:
             # Clean up
             if os.path.exists(temp_path):
                 os.remove(temp_path)
+
+
+class TestBeautifyScadCode(unittest.TestCase):
+    """Unit tests for the SCAD beautifier helper."""
+
+    def test_beautify_adds_consistent_indentation(self):
+        """Nested constructs receive progressive indentation."""
+
+        ugly = (
+            'color("red") {\n'
+            'translate([0,0,0]) {\n'
+            'cube([1,1,1], center=false);\n'
+            '}\n'
+            '}\n'
+        )
+
+        expected = (
+            'color("red") {\n'
+            '    translate([0,0,0]) {\n'
+            '        cube([1,1,1], center=false);\n'
+            '    }\n'
+            '}'
+        )
+
+        self.assertEqual(beautify_scad_code(ugly), expected)
 
 
 class TestOpenSCADFramework(unittest.TestCase):

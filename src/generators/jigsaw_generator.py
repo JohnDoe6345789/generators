@@ -10,6 +10,33 @@ from typing import List, Tuple
 
 logger = logging.getLogger(__name__)
 
+
+def beautify_scad_code(code: str, indent: str = "    ") -> str:
+    """Return a consistently indented representation of ``code``."""
+
+    formatted_lines: List[str] = []
+    level = 0
+
+    for raw_line in code.splitlines():
+        stripped = raw_line.strip()
+
+        if not stripped:
+            formatted_lines.append("")
+            continue
+
+        line_level = level
+        if stripped.startswith("}"):
+            line_level = max(line_level - 1, 0)
+            level = line_level
+
+        formatted_lines.append(f"{indent * line_level}{stripped}")
+
+        if stripped.endswith("{"):
+            level += 1
+
+    return "\n".join(formatted_lines)
+
+
 # Embedded OpenSCAD framework
 class OpenSCAD:
     """Main class for building OpenSCAD objects with chainable operations."""
@@ -438,7 +465,7 @@ class JigsawBoardGenerator:
 """
         
         tiles = self.generate_tiles()
-        return header + str(tiles)
+        return header + beautify_scad_code(str(tiles))
 
     def _validate_holes_clear_of_seams(self) -> None:
         """Ensure no mounting hole is bisected by either seam."""

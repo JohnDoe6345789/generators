@@ -80,6 +80,12 @@ class OpenSCAD:
         return OpenSCAD(f"circle(d={d}, $fn={fn});")
 
     @staticmethod
+    def sphere(r: float, fn: int = 64) -> "OpenSCAD":
+        """Return an OpenSCAD sphere primitive."""
+
+        return OpenSCAD(f"sphere(r={r}, $fn={fn});")
+
+    @staticmethod
     def square(size: Sequence[float] | float, center: bool = False) -> "OpenSCAD":
         s = OpenSCAD._format_size(size)
         c = "true" if center else "false"
@@ -115,6 +121,24 @@ class OpenSCAD:
         else:
             col = f"[{','.join(map(str, c))}]"
         return OpenSCAD(f"color({col}) {{\n{self.code}\n}}")
+
+    def rotate_extrude(
+        self,
+        angle: float = 360,
+        convexity: int | None = None,
+        segments: int | None = None,
+    ) -> "OpenSCAD":
+        """Revolve a 2D profile around the Z axis."""
+
+        params: List[str] = []
+        if angle != 360:
+            params.append(f"angle={angle}")
+        if convexity is not None:
+            params.append(f"convexity={convexity}")
+        if segments is not None:
+            params.append(f"$fn={segments}")
+        args = f"({', '.join(params)})" if params else "()"
+        return OpenSCAD(f"rotate_extrude{args} {{\n{self.code}\n}}")
 
     def union(self, *others: "OpenSCAD") -> "OpenSCAD":
         objects = [self] + list(others)

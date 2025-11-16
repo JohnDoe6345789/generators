@@ -18,6 +18,23 @@ patches/     – Historical diffs or scaffolding assets.
 tests/       – Unit tests that exercise the Python generators.
 ```
 
+## SimplyRetro D8 OpenSCAD generator
+
+The `src/generators/simplyretro_d8_generator.py` module reads
+`assets/simplyRetro D8.step`, tessellates the mesh with
+[`cadquery`](https://cadquery.readthedocs.io/), and emits OpenSCAD code using
+the shared framework that powers the jigsaw and teapot generators. Install
+CadQuery and export the die with:
+
+```bash
+pip install cadquery
+PYTHONPATH=src python -m generators.simplyretro_d8_generator --output simplyretro_d8.scad
+```
+
+Advanced options (minimum volume, angular/linear tolerances, and module name)
+are exposed as CLI flags so the tessellation quality can be tuned for different
+printers or slicers.
+
 ## Running tests
 
 All Python tests live in ``tests/`` and assume the ``src/`` directory is on the

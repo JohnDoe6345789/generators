@@ -96,6 +96,23 @@ class OpenSCAD:
         pts = "[" + ",".join(f"[{','.join(map(str, p))}]" for p in points) + "]"
         return OpenSCAD(f"polygon(points={pts});")
 
+    @staticmethod
+    def polyhedron(
+        points: Iterable[Sequence[float]],
+        faces: Iterable[Sequence[int]],
+        convexity: int | None = None,
+    ) -> "OpenSCAD":
+        """Return a polyhedron primitive built from ``points`` and ``faces``."""
+
+        pts = "[" + ",".join(
+            f"[{','.join(map(str, point))}]" for point in points
+        ) + "]"
+        face_repr = "[" + ",".join(
+            f"[{','.join(map(str, face))}]" for face in faces
+        ) + "]"
+        extra = f", convexity={convexity}" if convexity is not None else ""
+        return OpenSCAD(f"polyhedron(points={pts}, faces={face_repr}{extra});")
+
     def translate(self, v: Sequence[float]) -> "OpenSCAD":
         vec = f"[{','.join(map(str, v))}]"
         return OpenSCAD(f"translate({vec}) {{\n{self.code}\n}}")

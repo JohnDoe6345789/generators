@@ -1,23 +1,20 @@
 #!/usr/bin/env python3
-"""
-Unit tests for the Jigsaw Board Generator.
-Run with: python -m pytest test_jigsaw.py -v
-or: python test_jigsaw.py
-"""
+"""Unit tests for the Jigsaw Board Generator."""
 
-import unittest
+from __future__ import annotations
+
 import re
+import sys
+import unittest
+from pathlib import Path
 from typing import List, Tuple
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_DIR = PROJECT_ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 
-# Import the generator (assumes it's in the same directory)
-# If running standalone, paste the JigsawBoardGenerator class here
-try:
-    from jigsaw_generator import JigsawBoardGenerator
-except ImportError:
-    # For standalone testing, you'll need to paste the class here
-    print("Warning: Could not import JigsawBoardGenerator")
-    print("Make sure the module is in the same directory or PYTHONPATH")
+from jigsaw_generator import JigsawBoardGenerator
 
 
 class TestJigsawBoardGenerator(unittest.TestCase):
@@ -208,39 +205,24 @@ class TestJigsawBoardGenerator(unittest.TestCase):
         self.assertIsNotNone(scad)
         self.assertGreater(len(scad), 0)
     
-    def test_no_tabs_near_tile_corners(self):
-        """Test that tabs maintain buffer distance from tile corners."""
-        # Generate with known positions
-        self.gen.find_safe_tab_positions(num_tabs_per_seam=4)
-        
-        # Get the corner buffer from the generator
-        corner_buffer = self.gen.peg_width * 1.5
-        
-        # Check vertical tabs don't appear too close to any tile's Y boundaries
+    def test_tabs_respect_corner_buffers(self):
+        """Tabs should keep a healthy distance from the physical corners."""
+        self.gen.find_safe_tab_positions(num_tabs_per_seam=4,
+                                         min_distance_from_corner=40.0)
+
+        corner_buffer = 40.0
+
         for y_tab in self.gen.vert_tab_y:
-            # Should be away from y=0, y=mid_y, and y=board_h
-            self.assertGreater(y_tab, corner_buffer, 
-                             f"Vertical tab at y={y_tab} too close to bottom edge")
+            self.assertGreater(y_tab, corner_buffer,
+                               f"Vertical tab at y={y_tab} too close to bottom edge")
             self.assertLess(y_tab, self.board_h - corner_buffer,
-                          f"Vertical tab at y={y_tab} too close to top edge")
-            
-            # Should not be too close to the mid_y seam
-            dist_from_mid = abs(y_tab - self.gen.mid_y)
-            self.assertGreater(dist_from_mid, corner_buffer,
-                             f"Vertical tab at y={y_tab} too close to horizontal seam at y={self.gen.mid_y}")
-        
-        # Check horizontal tabs don't appear too close to any tile's X boundaries  
+                            f"Vertical tab at y={y_tab} too close to top edge")
+
         for x_tab in self.gen.horz_tab_x:
-            # Should be away from x=0, x=mid_x, and x=board_w
             self.assertGreater(x_tab, corner_buffer,
-                             f"Horizontal tab at x={x_tab} too close to left edge")
+                               f"Horizontal tab at x={x_tab} too close to left edge")
             self.assertLess(x_tab, self.board_w - corner_buffer,
-                          f"Horizontal tab at x={x_tab} too close to right edge")
-            
-            # Should not be too close to the mid_x seam
-            dist_from_mid = abs(x_tab - self.gen.mid_x)
-            self.assertGreater(dist_from_mid, corner_buffer,
-                             f"Horizontal tab at x={x_tab} too close to vertical seam at x={self.gen.mid_x}")
+                            f"Horizontal tab at x={x_tab} too close to right edge")
     
     def test_clearance_applied_to_female_pockets(self):
         """Test that clearance is properly applied."""

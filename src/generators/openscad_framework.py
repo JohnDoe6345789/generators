@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Iterable, List, Sequence, Tuple
 
 
@@ -148,6 +149,98 @@ class OpenSCAD:
             params.append(f"scale={scale}")
         return OpenSCAD(f"linear_extrude({', '.join(params)}) {{\n{self.code}\n}}")
 
+    @staticmethod
+    def module_call(name: str, args: Sequence[object] | None = None) -> "OpenSCAD":
+        """Return an ``OpenSCAD`` object that invokes ``name`` with ``args``."""
+
+        if args:
+            arg_str = ", ".join(map(str, args))
+            return OpenSCAD(f"{name}({arg_str});")
+        return OpenSCAD(f"{name}();")
+
+
+@dataclass
+class OpenSCADModule:
+    """Container describing an OpenSCAD module definition."""
+
+    name: str
+    body: OpenSCAD
+    args: Sequence[str] = field(default_factory=list)
+
+    def render(self) -> str:
+        signature = f"module {self.name}({', '.join(self.args)})" if self.args else f"module {self.name}()"
+        return f"{signature} {{\n{self.body.code}\n}}"
+
+
+class OpenSCADScript:
+    """High level helper for procedurally generating OpenSCAD files."""
+
+    def __init__(self) -> None:
+        self._headers: List[str] = []
+        self._functions: List[str] = []
+        self._modules: List[OpenSCADModule] = []
+        self._body: List[str] = []
+
+    def add_header(self, text: str) -> None:
+        """Append ``text`` to the comment header block."""
+
+        cleaned = text.strip()
+        if cleaned:
+            self._headers.append(cleaned)
+
+    def define_function(
+        self,
+        name: str,
+        expression: object,
+        args: Sequence[str] | None = None,
+    ) -> None:
+        """Register an OpenSCAD function definition."""
+
+        args_repr = f"({', '.join(args)})" if args else "()"
+        expr_repr = self._format_expression(expression)
+        self._functions.append(f"function {name}{args_repr} = {expr_repr};")
+
+    def define_module(
+        self,
+        name: str,
+        body: OpenSCAD,
+        args: Sequence[str] | None = None,
+    ) -> None:
+        """Register a module definition backed by ``body``."""
+
+        module = OpenSCADModule(name=name, body=body, args=list(args or []))
+        self._modules.append(module)
+
+    def add_body(self, snippet: OpenSCAD | str) -> None:
+        """Append a raw code ``snippet`` to the main body."""
+
+        if isinstance(snippet, OpenSCAD):
+            self._body.append(snippet.code)
+        else:
+            self._body.append(snippet)
+
+    def render(self) -> str:
+        """Return the fully assembled OpenSCAD document."""
+
+        sections: List[str] = []
+        if self._headers:
+            sections.append("\n".join(self._headers))
+        if self._functions:
+            sections.append("\n".join(self._functions))
+        if self._modules:
+            sections.append("\n\n".join(module.render() for module in self._modules))
+        if self._body:
+            sections.append("\n".join(self._body))
+        return beautify_scad_code("\n\n".join(filter(None, sections)))
+
+    @staticmethod
+    def _format_expression(expression: object) -> str:
+        if isinstance(expression, OpenSCAD):
+            return expression.code
+        if isinstance(expression, (list, tuple)):
+            return "[" + ",".join(map(str, expression)) + "]"
+        return str(expression)
+
 
 class GeometryMath:
     """Utility helpers for common 2D geometric calculations."""
@@ -174,5 +267,11 @@ class GeometryMath:
         return lower < value < upper
 
 
-__all__ = ["beautify_scad_code", "GeometryMath", "OpenSCAD"]
+__all__ = [
+    "GeometryMath",
+    "OpenSCAD",
+    "OpenSCADModule",
+    "OpenSCADScript",
+    "beautify_scad_code",
+]
 

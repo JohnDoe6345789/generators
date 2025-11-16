@@ -1,6 +1,8 @@
 """Tests for the Tk workflow launcher helper functions."""
 from pathlib import Path
 
+import pytest
+
 from gui import workflow_launcher
 
 
@@ -39,3 +41,17 @@ def test_script_parameters_detects_real_script() -> None:
     assert params
     assert params[0].label == "Config File"
     assert params[0].required is False
+
+
+def test_split_user_args_handles_quotes_and_spaces() -> None:
+    """User-provided arguments should preserve quoted substrings."""
+
+    args = workflow_launcher.split_user_args("--flag value 'two words'")
+    assert args == ["--flag", "value", "two words"]
+
+
+def test_split_user_args_requires_balanced_quotes() -> None:
+    """Invalid argument syntax should raise ValueError for the caller."""
+
+    with pytest.raises(ValueError):
+        workflow_launcher.split_user_args("'unterminated")

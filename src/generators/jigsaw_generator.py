@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import logging
 from typing import List, Tuple
 
-from generators.openscad_framework import GeometryMath, OpenSCAD, beautify_scad_code
+from generators.openscad_framework import GeometryMath, OpenSCAD, OpenSCADScript
 
 
 logger = logging.getLogger(__name__)
@@ -326,43 +326,27 @@ class JigsawBoardGenerator:
 """
 
         tiles = self.generate_tiles()
-        module_definitions = [
-            f"module {tile.name}() {{\n{tile.geometry}\n}}" for tile in tiles
-        ]
+        script = OpenSCADScript()
+        script.add_header(header)
+        script.define_function("bed_spacing", self.bed_spacing)
 
-        layout_calls = [self._format_layout_call(tile) for tile in tiles]
-        layout_module = "module layout_tiles() {\n" + "\n".join(layout_calls) + "\n}"
+        for tile in tiles:
+            script.define_module(tile.name, tile.geometry)
 
-        sections = [
-            header.strip(),
-            self._scad_functions_block(),
-            "\n\n".join(module_definitions),
-            layout_module,
-            "layout_tiles();",
-        ]
+        layout_calls = []
+        for tile in tiles:
+            x_mult, y_mult = tile.offset
+            x_expr = f"{x_mult} * bed_spacing()"
+            y_expr = f"{y_mult} * bed_spacing()"
+            layout_calls.append(
+                OpenSCAD.module_call(tile.name).translate([x_expr, y_expr, 0])
+            )
 
-        scad_text = "\n\n".join(filter(None, sections))
-        return beautify_scad_code(scad_text)
+        layout_body = OpenSCAD("\n".join(call.code for call in layout_calls))
+        script.define_module("layout_tiles", layout_body)
+        script.add_body(OpenSCAD.module_call("layout_tiles"))
 
-    def _scad_functions_block(self) -> str:
-        """Return helper OpenSCAD functions used throughout the file."""
-
-        return "\n".join([
-            f"function bed_spacing() = {self.bed_spacing};",
-            "function layout_offset(x_mult, y_mult, z_offset=0) = "
-            "[x_mult * bed_spacing(), y_mult * bed_spacing(), z_offset];",
-        ])
-
-    @staticmethod
-    def _format_layout_call(tile: TilePlacement) -> str:
-        """Return the SCAD snippet that positions a tile module."""
-
-        x_mult, y_mult = tile.offset
-        return (
-            f"translate(layout_offset({x_mult}, {y_mult})) {{\n"
-            f"    {tile.name}();\n"
-            f"}}"
-        )
+        return script.render()
 
     def _validate_holes_clear_of_seams(self) -> None:
         """Ensure no mounting hole is bisected by either seam."""

@@ -322,7 +322,7 @@ class TestJigsawBoardGenerator(unittest.TestCase):
         # Modules and helper functions keep the SCAD organized
         self.assertIn('module tile_a()', scad)
         self.assertIn('module layout_tiles()', scad)
-        self.assertIn('function layout_offset', scad)
+        self.assertIn('function bed_spacing', scad)
         
         # Check for geometric operations
         self.assertIn("union()", scad)
@@ -349,10 +349,10 @@ class TestJigsawBoardGenerator(unittest.TestCase):
         self.gen.find_safe_tab_positions(num_tabs_per_seam=2)
         scad = self.gen.generate_scad()
         
-        # Check for the layout helper that spaces each tile on the print bed
-        self.assertIn('translate(layout_offset(1, 0))', scad)
-        self.assertIn('translate(layout_offset(0, 1))', scad)
-        self.assertIn('translate(layout_offset(1, 1))', scad)
+        # Check for layout translations that rely on the generated helper
+        self.assertIn('translate([1 * bed_spacing(),0 * bed_spacing(),0])', scad)
+        self.assertIn('translate([0 * bed_spacing(),1 * bed_spacing(),0])', scad)
+        self.assertIn('translate([1 * bed_spacing(),1 * bed_spacing(),0])', scad)
     
     def test_holes_generated_for_tiles(self):
         """Test that mounting holes are included in output."""
@@ -628,10 +628,37 @@ class TestOpenSCADFramework(unittest.TestCase):
     def test_color_operation(self):
         """Test color assignment."""
         from generators.openscad_framework import OpenSCAD
-        
+
         obj = OpenSCAD.cube(10).color("red")
         code = str(obj)
         self.assertIn('color("red")', code)
+
+    def test_module_call_helper(self):
+        """Ensure module invocations are generated via the framework."""
+
+        from generators.openscad_framework import OpenSCAD
+
+        call = OpenSCAD.module_call("example")
+        self.assertEqual("example();", str(call))
+
+        call_with_args = OpenSCAD.module_call("with_args", [1, "foo"])
+        self.assertEqual('with_args(1, foo);', str(call_with_args))
+
+    def test_openscad_script_builder(self):
+        """OpenSCADScript should procedurally assemble complete files."""
+
+        from generators.openscad_framework import OpenSCAD, OpenSCADScript
+
+        script = OpenSCADScript()
+        script.add_header("// generated")
+        script.define_function("constant", 42)
+        script.define_module("demo", OpenSCAD.cube(1))
+        script.add_body(OpenSCAD.module_call("demo"))
+
+        rendered = script.render()
+        self.assertIn('function constant()', rendered)
+        self.assertIn('module demo()', rendered)
+        self.assertIn('demo();', rendered)
 
 
 class TestEdgeCases(unittest.TestCase):

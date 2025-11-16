@@ -26,6 +26,9 @@ if /I "%TARGET%"=="tests" (
 ) else if /I "%TARGET%"=="generator" (
   python -m generators.simplyretro_d8_generator %*
   goto :eof
+) else if /I "%TARGET%"=="launcher" (
+  python -m gui.workflow_launcher %*
+  goto :eof
 ) else if /I "%TARGET%"=="module" (
   if "%1"=="" (
     echo Please provide a module path, e.g. generators.jigsaw_generator
@@ -39,6 +42,7 @@ if /I "%TARGET%"=="tests" (
   echo Usage: run.bat [tests^|generator^|module^|help] [args]
   echo(  tests      Run pytest for the repository.
   echo(  generator  Execute the SimplyRetro D8 generator.
+  echo(  launcher   Launch the Tk workflow control center.
   echo(  module     Run an arbitrary module under src/.
   goto :eof
 )

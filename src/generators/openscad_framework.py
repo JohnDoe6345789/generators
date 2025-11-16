@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from math import acos, isclose, sqrt
 from typing import Iterable, List, Sequence, Tuple
 
 
@@ -308,11 +309,152 @@ class GeometryMath:
         return lower < value < upper
 
 
+class Vector:
+    """3D vector inspired by CadQuery's helper without requiring the package."""
+
+    __slots__ = ("_x", "_y", "_z")
+
+    def __init__(
+        self,
+        x: float | Sequence[float] = 0.0,
+        y: float | None = None,
+        z: float | None = None,
+    ) -> None:
+        if isinstance(x, Vector):
+            self._x, self._y, self._z = x.to_tuple()
+            return
+
+        if isinstance(x, (list, tuple)):
+            coords = list(x)
+            if len(coords) not in (2, 3):
+                raise ValueError("Vector requires two or three components.")
+            self._x = float(coords[0])
+            self._y = float(coords[1])
+            self._z = float(coords[2]) if len(coords) == 3 else 0.0
+            return
+
+        if y is None and z is None:
+            self._x = float(x)
+            self._y = 0.0
+            self._z = 0.0
+            return
+
+        if y is not None and z is None:
+            self._x = float(x)
+            self._y = float(y)
+            self._z = 0.0
+            return
+
+        if y is None or z is None:
+            raise ValueError("Vector initialization requires all coordinates.")
+
+        self._x = float(x)
+        self._y = float(y)
+        self._z = float(z)
+
+    @property
+    def x(self) -> float:
+        return self._x
+
+    @property
+    def y(self) -> float:
+        return self._y
+
+    @property
+    def z(self) -> float:
+        return self._z
+
+    def to_tuple(self) -> Tuple[float, float, float]:
+        return (self._x, self._y, self._z)
+
+    @property
+    def length(self) -> float:
+        return sqrt(self._x ** 2 + self._y ** 2 + self._z ** 2)
+
+    def normalized(self) -> "Vector":
+        magnitude = self.length
+        if magnitude == 0:
+            raise ValueError("Cannot normalize a zero-length vector.")
+        return Vector(
+            self._x / magnitude,
+            self._y / magnitude,
+            self._z / magnitude,
+        )
+
+    def dot(self, other: "Vector") -> float:
+        return self._x * other._x + self._y * other._y + self._z * other._z
+
+    def cross(self, other: "Vector") -> "Vector":
+        return Vector(
+            self._y * other._z - self._z * other._y,
+            self._z * other._x - self._x * other._z,
+            self._x * other._y - self._y * other._x,
+        )
+
+    def __add__(self, other: "Vector") -> "Vector":
+        return Vector(
+            self._x + other._x,
+            self._y + other._y,
+            self._z + other._z,
+        )
+
+    def __sub__(self, other: "Vector") -> "Vector":
+        return Vector(
+            self._x - other._x,
+            self._y - other._y,
+            self._z - other._z,
+        )
+
+    def multiply(self, scale: float) -> "Vector":
+        return Vector(
+            self._x * scale,
+            self._y * scale,
+            self._z * scale,
+        )
+
+    def __mul__(self, scale: float) -> "Vector":
+        return self.multiply(scale)
+
+    def __rmul__(self, scale: float) -> "Vector":
+        return self.multiply(scale)
+
+    def __truediv__(self, denom: float) -> "Vector":
+        if denom == 0:
+            raise ZeroDivisionError("Cannot divide vector by zero.")
+        return self.multiply(1.0 / denom)
+
+    def distance_to(self, other: "Vector") -> float:
+        return (self - other).length
+
+    def angle_to(self, other: "Vector") -> float:
+        denom = self.length * other.length
+        if denom == 0:
+            raise ValueError("Cannot compute an angle with a zero-length vector.")
+        value = max(min(self.dot(other) / denom, 1.0), -1.0)
+        return acos(value)
+
+    def is_close(self, other: "Vector", tol: float = 1e-9) -> bool:
+        return (
+            isclose(self._x, other._x, abs_tol=tol)
+            and isclose(self._y, other._y, abs_tol=tol)
+            and isclose(self._z, other._z, abs_tol=tol)
+        )
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Vector):
+            return NotImplemented
+        return self.is_close(other)
+
+    def __repr__(self) -> str:  # pragma: no cover - trivial representation
+        return f"Vector({self._x}, {self._y}, {self._z})"
+
+
 __all__ = [
     "GeometryMath",
     "OpenSCAD",
     "OpenSCADModule",
     "OpenSCADScript",
+    "Vector",
     "beautify_scad_code",
 ]
 

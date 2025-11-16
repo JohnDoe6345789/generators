@@ -2,7 +2,8 @@
 set -euo pipefail
 
 this_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-py_script="${this_dir}/mac_app_installer.py"
+repo_root="$(cd "${this_dir}/.." && pwd)"
+py_script="${repo_root}/src/installers/mac_app_installer.py"
 
 have_cmd() {
   command -v "$1" >/dev/null 2>&1

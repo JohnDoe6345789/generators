@@ -9,14 +9,29 @@ from typing import List, Tuple
 # Embedded OpenSCAD framework
 class OpenSCAD:
     """Main class for building OpenSCAD objects with chainable operations."""
-    
+
     def __init__(self, code=""):
         self.code = code
-    
+
+    @staticmethod
+    def _indent(code: str, spaces: int = 4) -> str:
+        """Return ``code`` indented by ``spaces`` for prettier nesting."""
+
+        if not code:
+            return code
+
+        pad = " " * spaces
+        lines = code.splitlines()
+        return "\n".join(pad + line if line.strip() else line for line in lines)
+
     def __str__(self):
         return self.code
-    
+
     def __add__(self, other):
+        if not self.code:
+            return OpenSCAD(other.code)
+        if not other.code:
+            return OpenSCAD(self.code)
         return OpenSCAD(f"{self.code}\n{other.code}")
     
     @staticmethod
@@ -62,43 +77,43 @@ class OpenSCAD:
     
     def translate(self, v):
         vec = f"[{','.join(map(str, v))}]"
-        return OpenSCAD(f"translate({vec}) {{\n{self.code}\n}}")
-    
+        return OpenSCAD(f"translate({vec}) {{\n{self._indent(self.code)}\n}}")
+
     def rotate(self, a, v=None):
         if v is None:
             if isinstance(a, (list, tuple)):
                 ang = f"[{','.join(map(str, a))}]"
             else:
                 ang = str(a)
-            return OpenSCAD(f"rotate({ang}) {{\n{self.code}\n}}")
+            return OpenSCAD(f"rotate({ang}) {{\n{self._indent(self.code)}\n}}")
         else:
             vec = f"[{','.join(map(str, v))}]"
-            return OpenSCAD(f"rotate(a={a}, v={vec}) {{\n{self.code}\n}}")
-    
+            return OpenSCAD(f"rotate(a={a}, v={vec}) {{\n{self._indent(self.code)}\n}}")
+
     def color(self, c):
         if isinstance(c, str):
             col = f'"{c}"'
         else:
             col = f"[{','.join(map(str, c))}]"
-        return OpenSCAD(f"color({col}) {{\n{self.code}\n}}")
-    
+        return OpenSCAD(f"color({col}) {{\n{self._indent(self.code)}\n}}")
+
     def union(self, *others):
         objects = [self] + list(others)
-        combined = "\n".join(obj.code for obj in objects)
-        return OpenSCAD(f"union() {{\n{combined}\n}}")
-    
+        combined = "\n\n".join(obj.code for obj in objects)
+        return OpenSCAD(f"union() {{\n{self._indent(combined)}\n}}")
+
     def difference(self, *others):
         objects = [self] + list(others)
-        combined = "\n".join(obj.code for obj in objects)
-        return OpenSCAD(f"difference() {{\n{combined}\n}}")
-    
+        combined = "\n\n".join(obj.code for obj in objects)
+        return OpenSCAD(f"difference() {{\n{self._indent(combined)}\n}}")
+
     def hull(self, *others):
         if others:
             objects = [self] + list(others)
-            combined = "\n".join(obj.code for obj in objects)
-            return OpenSCAD(f"hull() {{\n{combined}\n}}")
-        return OpenSCAD(f"hull() {{\n{self.code}\n}}")
-    
+            combined = "\n\n".join(obj.code for obj in objects)
+            return OpenSCAD(f"hull() {{\n{self._indent(combined)}\n}}")
+        return OpenSCAD(f"hull() {{\n{self._indent(self.code)}\n}}")
+
     def linear_extrude(self, height, center=False, twist=0, scale=1):
         params = [f"height={height}"]
         if center:
@@ -107,7 +122,7 @@ class OpenSCAD:
             params.append(f"twist={twist}")
         if scale != 1:
             params.append(f"scale={scale}")
-        return OpenSCAD(f"linear_extrude({', '.join(params)}) {{\n{self.code}\n}}")
+        return OpenSCAD(f"linear_extrude({', '.join(params)}) {{\n{self._indent(self.code)}\n}}")
 
 
 class GeometryMath:

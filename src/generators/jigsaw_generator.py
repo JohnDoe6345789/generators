@@ -342,6 +342,8 @@ class JigsawBoardGenerator:
         """Generate all four tiles in a spaced layout."""
         if not self.vert_tab_y or not self.horz_tab_x:
             self.find_safe_tab_positions()
+
+        self._validate_holes_clear_of_seams()
         
         # CRITICAL: Each tile only gets tabs/pockets on the seams it touches
         # Vertical seam at mid_x: Tiles A & C (left) have MALE, Tiles B & D (right) have FEMALE
@@ -391,6 +393,28 @@ class JigsawBoardGenerator:
         
         tiles = self.generate_tiles()
         return header + str(tiles)
+
+    def _validate_holes_clear_of_seams(self) -> None:
+        """Ensure no mounting hole is bisected by either seam."""
+
+        conflicts = []
+        tolerance = 1e-6
+        for hx, hy in self.holes:
+            if abs(hx - self.mid_x) <= self.hole_r + tolerance:
+                conflicts.append(
+                    f"({hx:.3f}, {hy:.3f}) intersects the vertical seam at x={self.mid_x:.3f}"
+                )
+            if abs(hy - self.mid_y) <= self.hole_r + tolerance:
+                conflicts.append(
+                    f"({hx:.3f}, {hy:.3f}) intersects the horizontal seam at y={self.mid_y:.3f}"
+                )
+
+        if conflicts:
+            message = (
+                "Mounting holes are too close to the jigsaw seams; these would be split "
+                "across tiles: " + "; ".join(conflicts)
+            )
+            raise ValueError(message)
     
     def save_scad(self, filename: str):
         """Save the generated OpenSCAD code to a file."""

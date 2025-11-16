@@ -605,6 +605,36 @@ class TestEndToEndExecution(unittest.TestCase):
             self.assertEqual(hits_tile_a, 2, "Tile A center should produce exactly two intersections")
             self.assertEqual(hits_tile_b, 2, "Tile B center should produce exactly two intersections")
             self.assertEqual(hits_gap, 0, "Gap between tiles should not intersect the mesh")
+
+    @unittest.skipUnless(shutil.which("openscad"), "OpenSCAD CLI is required for this test")
+    def test_rendered_geometry_visible_from_multiple_cameras(self):
+        """Cast rays from different camera angles to ensure the mesh is watertight."""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _, rendered_path = self._render_fixture(tmpdir)
+
+            triangles = load_stl_triangles(rendered_path)
+            self.assertGreater(len(triangles), 0, "Rendered STL did not contain any triangles")
+
+            board_w = 243.84
+            board_h = 243.84
+            board_t = 3.0
+            bed_spacing = 300
+
+            cameras = [
+                ((board_w / 2, board_h / 2, -10.0), (0.0, 0.0, 1.0), 2,
+                 "Top-down camera should intersect the center tile twice"),
+                ((-10.0, board_h / 4, board_t / 2), (1.0, 0.0, 0.0), 2,
+                 "Side-on camera along +X should intersect the first column tile twice"),
+                ((bed_spacing + board_w / 2, -10.0, board_t / 2), (0.0, 1.0, 0.0), 2,
+                 "Front-on camera along +Y should intersect the bottom row tile twice"),
+                ((board_w + 10.0, board_h / 2, board_t / 2), (0.0, 0.0, 1.0), 0,
+                 "A camera aimed at the spacing gap should see no intersections"),
+            ]
+
+            for origin, direction, expected_hits, message in cameras:
+                hits = len(cast_ray(triangles, origin, direction))
+                self.assertEqual(hits, expected_hits, message)
     
     def test_requesting_more_tabs_than_possible(self):
         """Test requesting more tabs than space allows."""

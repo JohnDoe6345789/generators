@@ -66,6 +66,12 @@ pip install cadquery
 PYTHONPATH=src python -m generators.simplyretro_d8_generator --output simplyretro_d8.scad
 ```
 
+CadQuery is optional for most workflows and is no longer installed through
+``requirements.txt``. The OpenSCAD framework now embeds the light-weight
+vector helpers that originated in
+[CadQuery/cadquery](https://github.com/CadQuery/cadquery) so the remaining
+generators and tests can run without the heavy dependency.
+
 Advanced options (minimum volume, angular/linear tolerances, and module name)
 are exposed as CLI flags so the tessellation quality can be tuned for different
 printers or slicers.

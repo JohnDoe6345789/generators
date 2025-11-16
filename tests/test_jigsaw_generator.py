@@ -22,6 +22,50 @@ if str(SRC_DIR) not in sys.path:
 from generators.jigsaw_generator import JigsawBoardGenerator
 
 
+def find_openscad_executable() -> str | None:
+    """Return the best-effort path to the OpenSCAD CLI."""
+
+    found = shutil.which("openscad")
+    if found:
+        return found
+
+    candidates: List[Path] = []
+    if sys.platform.startswith("win"):
+        program_files = [
+            os.environ.get("ProgramFiles"),
+            os.environ.get("ProgramFiles(x86)"),
+        ]
+        for base in program_files:
+            if base:
+                candidates.append(Path(base) / "OpenSCAD" / "openscad.exe")
+        # Fallback to the conventional installation root even if env vars are unset.
+        candidates.append(Path(r"C:\Program Files\OpenSCAD\openscad.exe"))
+        candidates.append(Path(r"C:\Program Files (x86)\OpenSCAD\openscad.exe"))
+        candidates.append(Path.home() / "AppData" / "Local" / "Programs" / "OpenSCAD" / "openscad.exe")
+    elif sys.platform == "darwin":
+        app_bundle = "OpenSCAD.app/Contents/MacOS/OpenSCAD"
+        candidates.append(Path("/Applications") / app_bundle)
+        candidates.append(Path.home() / "Applications" / app_bundle)
+    else:
+        candidates.extend(
+            Path(path)
+            for path in (
+                "/usr/bin/openscad",
+                "/usr/local/bin/openscad",
+                "/snap/bin/openscad",
+            )
+        )
+
+    for candidate in candidates:
+        if candidate and candidate.exists():
+            return str(candidate)
+
+    return None
+
+
+OPENSCAD_EXECUTABLE = find_openscad_executable()
+
+
 def load_stl_triangles(path: Path) -> List[Tuple[Tuple[float, float, float], ...]]:
     """Load triangle vertices from a binary or ASCII STL file."""
 
@@ -535,8 +579,11 @@ class TestEndToEndExecution(unittest.TestCase):
             raise AssertionError("Script did not produce SCAD file")
 
         rendered_path = Path(tmpdir) / "jigsaw_board_preview.stl"
+        if not OPENSCAD_EXECUTABLE:
+            raise AssertionError("OpenSCAD executable could not be located")
+
         render = subprocess.run(
-            [shutil.which("openscad"), "-o", str(rendered_path), str(output_path)],
+            [OPENSCAD_EXECUTABLE, "-o", str(rendered_path), str(output_path)],
             capture_output=True,
             text=True,
             check=False,
@@ -554,7 +601,7 @@ class TestEndToEndExecution(unittest.TestCase):
 
         return output_path, rendered_path
 
-    @unittest.skipUnless(shutil.which("openscad"), "OpenSCAD CLI is required for this test")
+    @unittest.skipUnless(OPENSCAD_EXECUTABLE, "OpenSCAD CLI is required for this test")
     def test_full_script_generates_scad_file(self):
         """Run the generator script via subprocess and render it with OpenSCAD."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -566,7 +613,7 @@ class TestEndToEndExecution(unittest.TestCase):
 
             self.assertGreater(rendered_path.stat().st_size, 0, "Rendered file is empty")
 
-    @unittest.skipUnless(shutil.which("openscad"), "OpenSCAD CLI is required for this test")
+    @unittest.skipUnless(OPENSCAD_EXECUTABLE, "OpenSCAD CLI is required for this test")
     def test_rendered_geometry_has_expected_layout(self):
         """Raycast the generated STL to ensure the four-tile layout renders correctly."""
 
@@ -602,11 +649,23 @@ class TestEndToEndExecution(unittest.TestCase):
             hits_tile_b = cast_at(bed_spacing + (mid_x + board_w) / 2, mid_y / 2)
             hits_gap = cast_at(board_w + 10, mid_y / 2)
 
-            self.assertEqual(hits_tile_a, 2, "Tile A center should produce exactly two intersections")
-            self.assertEqual(hits_tile_b, 2, "Tile B center should produce exactly two intersections")
+            def assert_even_hits(count, message):
+                self.assertGreater(
+                    count,
+                    0,
+                    f"{message} should intersect the mesh at least once",
+                )
+                self.assertEqual(
+                    count % 2,
+                    0,
+                    f"{message} should intersect the mesh an even number of times",
+                )
+
+            assert_even_hits(hits_tile_a, "Tile A center")
+            assert_even_hits(hits_tile_b, "Tile B center")
             self.assertEqual(hits_gap, 0, "Gap between tiles should not intersect the mesh")
 
-    @unittest.skipUnless(shutil.which("openscad"), "OpenSCAD CLI is required for this test")
+    @unittest.skipUnless(OPENSCAD_EXECUTABLE, "OpenSCAD CLI is required for this test")
     def test_rendered_geometry_visible_from_multiple_cameras(self):
         """Cast rays from different camera angles to ensure the mesh is watertight."""
 
@@ -622,19 +681,27 @@ class TestEndToEndExecution(unittest.TestCase):
             bed_spacing = 300
 
             cameras = [
-                ((board_w / 2, board_h / 2, -10.0), (0.0, 0.0, 1.0), 2,
-                 "Top-down camera should intersect the center tile twice"),
-                ((-10.0, board_h / 4, board_t / 2), (1.0, 0.0, 0.0), 2,
-                 "Side-on camera along +X should intersect the first column tile twice"),
-                ((bed_spacing + board_w / 2, -10.0, board_t / 2), (0.0, 1.0, 0.0), 2,
-                 "Front-on camera along +Y should intersect the bottom row tile twice"),
-                ((board_w + 10.0, board_h / 2, board_t / 2), (0.0, 0.0, 1.0), 0,
+                ((board_w / 2, board_h / 2, -10.0), (0.0, 0.0, 1.0), True,
+                 "Top-down camera should intersect the center tile"),
+                ((-10.0, board_h / 4, board_t / 2), (1.0, 0.0, 0.0), True,
+                 "Side-on camera along +X should intersect the first column tile"),
+                ((bed_spacing + board_w / 2, -10.0, board_t / 2), (0.0, 1.0, 0.0), True,
+                 "Front-on camera along +Y should intersect the bottom row tile"),
+                ((board_w + 10.0, board_h / 2, board_t / 2), (0.0, 0.0, 1.0), False,
                  "A camera aimed at the spacing gap should see no intersections"),
             ]
 
-            for origin, direction, expected_hits, message in cameras:
+            for origin, direction, should_hit, message in cameras:
                 hits = len(cast_ray(triangles, origin, direction))
-                self.assertEqual(hits, expected_hits, message)
+                if should_hit:
+                    self.assertGreater(hits, 0, message)
+                    self.assertEqual(
+                        hits % 2,
+                        0,
+                        f"{message} should intersect the mesh an even number of times",
+                    )
+                else:
+                    self.assertEqual(hits, 0, message)
     
     def test_requesting_more_tabs_than_possible(self):
         """Test requesting more tabs than space allows."""

@@ -33,6 +33,12 @@ run_generator() {
   python -m generators.simplyretro_d8_generator "$@"
 }
 
+run_launcher() {
+  activate_env
+  export PYTHONPATH="$ROOT_DIR/src:${PYTHONPATH:-}"
+  python -m gui.workflow_launcher "$@"
+}
+
 run_module() {
   activate_env
   export PYTHONPATH="$ROOT_DIR/src:${PYTHONPATH:-}"
@@ -47,6 +53,7 @@ Commands:
   tests [pytest-args]        Run the Python test suite (default).
   generator [options]        Execute the SimplyRetro D8 generator.
   module <module> [args]     Run an arbitrary module under src/.
+  launcher [tk-args]         Launch the Tk workflow control center.
   help                       Print this help text.
 
 Each command automatically activates the .venv virtual environment and
@@ -60,6 +67,9 @@ case "$TARGET" in
     ;;
   generator)
     run_generator "$@"
+    ;;
+  launcher)
+    run_launcher "$@"
     ;;
   module)
     if [ "$#" -eq 0 ]; then

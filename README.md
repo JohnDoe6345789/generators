@@ -27,6 +27,7 @@ right commands:
 ./setup.sh          # Create .venv and install requirements on macOS/Linux
 ./run.sh tests      # Run pytest with src/ on PYTHONPATH
 ./run.sh generator  # Execute the SimplyRetro D8 generator
+./run.sh launcher   # Open the Tk workflow control center
 PYTHONPATH=src python -m gui.workflow_launcher  # Launch the Tk control center
 ```
 
@@ -36,11 +37,18 @@ scripts automatically activate the virtual environment, upgrade `pip`, and keep
 
 ### Tk workflow launcher
 
-Run `python -m gui.workflow_launcher` (ensure `src/` is on `PYTHONPATH`) to open
-the Tkinter-based control center. It exposes buttons for setting up the
-environment, running the pytest suite, launching the SimplyRetro generator, and
-invoking any helper script listed in the `scripts/` directory. Command output is
-streamed into the GUI so you can monitor progress without leaving the window.
+Run `./run.sh launcher` (or `run.bat launcher` on Windows) to open the
+Tkinter-based control center without juggling `PYTHONPATH`. You can still invoke
+it directly with `python -m gui.workflow_launcher` if desired. The launcher
+exposes buttons for setting up the environment, running the pytest suite,
+launching the SimplyRetro generator, and invoking any helper script listed in
+the `scripts/` directory. Command output is streamed into the GUI so you can
+monitor progress without leaving the window.
+
+> **Homebrew tip:** Recent macOS installs sometimes end up with both `/usr/bin`
+> and Homebrew versions of Python. Use `scripts/set_default_python.sh` to append
+> an alias block to your shell profile so the helper scripts consistently find
+> `/opt/homebrew/bin/python3`.
 
 ## SimplyRetro D8 OpenSCAD generator
 

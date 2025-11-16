@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from math import acos, isclose, sqrt
+from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
+
+try:  # pragma: no cover - optional dependency
+    import cadquery as _cadquery
+except ImportError:  # pragma: no cover - handled at runtime
+    _cadquery = None  # type: ignore[assignment]
 
 
 def beautify_scad_code(code: str, indent: str = "    ") -> str:
@@ -449,11 +455,58 @@ class Vector:
         return f"Vector({self._x}, {self._y}, {self._z})"
 
 
+@dataclass(slots=True)
+class StepTessellator:
+    """Helper that converts STEP geometry into OpenSCAD polyhedron data."""
+
+    angular_tolerance: float = 0.2
+    linear_tolerance: float = 0.5
+    min_volume: float = 50_000.0
+    precision: int = 4
+
+    def tessellate(self, step_path: str | Path) -> Tuple[List[List[float]], List[List[int]]]:
+        """Return tessellated vertices and faces for ``step_path``."""
+
+        backend = self._require_backend()
+        path = Path(step_path)
+        assembly = backend.importers.importStep(str(path))
+        solids = list(assembly.solids())
+        if not solids:
+            raise RuntimeError(f"No solids were found inside {path!s}.")
+
+        selected = [solid for solid in solids if solid.Volume() >= self.min_volume]
+        if not selected:
+            selected = solids
+
+        compound = backend.Compound.makeCompound(selected)
+        vectors, faces = compound.tessellate(self.angular_tolerance, self.linear_tolerance)
+
+        vertices = [
+            [
+                round(vector.x, self.precision),
+                round(vector.y, self.precision),
+                round(vector.z, self.precision),
+            ]
+            for vector in vectors
+        ]
+        face_indices = [list(face) for face in faces]
+        return vertices, face_indices
+
+    @staticmethod
+    def _require_backend():
+        if _cadquery is None:  # pragma: no cover - exercised when dependency missing
+            raise ModuleNotFoundError(
+                "cadquery is required to convert STEP files. Install it via 'pip install cadquery'."
+            )
+        return _cadquery
+
+
 __all__ = [
     "GeometryMath",
     "OpenSCAD",
     "OpenSCADModule",
     "OpenSCADScript",
+    "StepTessellator",
     "Vector",
     "beautify_scad_code",
 ]

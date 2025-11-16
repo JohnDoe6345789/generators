@@ -118,6 +118,15 @@ def discover_helper_scripts() -> List[Path]:
         for path in SCRIPTS_DIR.iterdir()
         if path.is_file() and path.suffix in suffixes
     ]
+    if not matches:
+        # Fall back to scanning all known suffixes so POSIX scripts remain
+        # discoverable even when the GUI executes on Windows (where .bat files
+        # may not exist).
+        matches = [
+            path
+            for path in SCRIPTS_DIR.iterdir()
+            if path.is_file() and path.suffix in {".sh", ".bat", ".cmd"}
+        ]
     return sorted(matches, key=lambda path: path.name.lower())
 
 
@@ -146,6 +155,19 @@ def parse_usage_parameters(usage_line: str) -> List[ScriptParameter]:
     return parameters
 
 
+def _usage_from_source(script: Path) -> str | None:
+    """Extract an inline ``Usage:`` line directly from ``script``."""
+
+    try:
+        for line in script.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.lower().startswith("usage:"):
+                return stripped
+    except OSError:
+        return None
+    return None
+
+
 def _script_usage_output(script: Path) -> str | None:
     """Return the stdout produced by the script's help flag, if any."""
 
@@ -161,11 +183,11 @@ def _script_usage_output(script: Path) -> str | None:
                 timeout=5,
                 check=False,
             )
-        except OSError:
-            return None
+        except (OSError, subprocess.TimeoutExpired):
+            return _usage_from_source(script)
         if completed.returncode == 0 and completed.stdout:
             return completed.stdout
-    return None
+    return _usage_from_source(script)
 
 
 def script_parameters(script: Path) -> List[ScriptParameter]:

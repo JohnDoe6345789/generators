@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import queue
+import shlex
 import subprocess
 import threading
 import tkinter as tk
@@ -36,6 +37,16 @@ class CommandSpec:
     label: str
     command: List[str]
     description: str
+    arg_label: str | None = None
+
+
+def split_user_args(argument_text: str) -> List[str]:
+    """Return ``argument_text`` split into CLI arguments via ``shlex``."""
+
+    text = argument_text.strip()
+    if not text:
+        return []
+    return shlex.split(text)
 
 
 @dataclass(frozen=True)
@@ -95,6 +106,7 @@ def base_commands() -> List[CommandSpec]:
                 label="Run Tests",
                 command=_command_for_script(run_script, "tests"),
                 description="Execute pytest with src/ on the module search path.",
+                arg_label="Optional pytest arguments",
             )
         )
         commands.append(
@@ -102,6 +114,7 @@ def base_commands() -> List[CommandSpec]:
                 label="Run Generator",
                 command=_command_for_script(run_script, "generator"),
                 description="Launch the SimplyRetro D8 generator entry point.",
+                arg_label="Generator flags (e.g. --output file.scad)",
             )
         )
     return commands
@@ -298,6 +311,7 @@ class WorkflowLauncher(tk.Tk):
         self.status_var = tk.StringVar(value="Idle")
         self.console = ConsolePane(self)
         self.runner = CommandRunner(self.console, self.status_var)
+        self._command_arg_vars: Dict[CommandSpec, tk.StringVar] = {}
         self._parameter_cache: Dict[Path, List[ScriptParameter]] = {}
         self._param_entries: List[tuple[ScriptParameter, tk.StringVar]] = []
         self._build_layout()
@@ -322,14 +336,38 @@ class WorkflowLauncher(tk.Tk):
         frame = ttk.LabelFrame(parent, text="Core workflows")
         frame.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
         for spec in base_commands():
+            card = ttk.Frame(frame)
+            card.pack(fill="x", pady=6)
             btn = ttk.Button(
-                frame,
+                card,
                 text=spec.label,
-                command=lambda cmd=spec.command: self.runner.run(cmd),
+                command=lambda current=spec: self._run_command_spec(current),
             )
-            btn.pack(fill="x", pady=6)
-            desc = ttk.Label(frame, text=spec.description, wraplength=320)
-            desc.pack(fill="x")
+            btn.pack(fill="x")
+            desc = ttk.Label(card, text=spec.description, wraplength=320)
+            desc.pack(fill="x", pady=(2, 0))
+            if spec.arg_label:
+                arg_row = ttk.Frame(card)
+                arg_row.pack(fill="x", pady=(6, 0))
+                label = ttk.Label(arg_row, text=spec.arg_label)
+                label.pack(anchor="w")
+                var = tk.StringVar()
+                entry = ttk.Entry(arg_row, textvariable=var)
+                entry.pack(fill="x")
+                self._command_arg_vars[spec] = var
+
+    def _run_command_spec(self, spec: CommandSpec) -> None:
+        """Run ``spec`` and append any optional user arguments."""
+
+        extra: List[str] = []
+        var = self._command_arg_vars.get(spec)
+        if var:
+            try:
+                extra = split_user_args(var.get())
+            except ValueError as exc:
+                self.console.write(f"Unable to parse arguments: {exc}\n")
+                return
+        self.runner.run([*spec.command, *extra])
 
     def _build_script_panel(self, parent: ttk.Frame) -> None:
         """Add the helper script list and run button."""

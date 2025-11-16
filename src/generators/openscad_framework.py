@@ -7,10 +7,7 @@ from math import acos, isclose, sqrt
 from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
 
-try:  # pragma: no cover - optional dependency
-    import cadquery as _cadquery
-except ImportError:  # pragma: no cover - handled at runtime
-    _cadquery = None  # type: ignore[assignment]
+from .step_backend import StepBackend
 
 
 def beautify_scad_code(code: str, indent: str = "    ") -> str:
@@ -316,7 +313,7 @@ class GeometryMath:
 
 
 class Vector:
-    """3D vector inspired by CadQuery's helper without requiring the package."""
+    """Lightweight 3D vector used for geometric calculations."""
 
     __slots__ = ("_x", "_y", "_z")
 
@@ -463,14 +460,14 @@ class StepTessellator:
     linear_tolerance: float = 0.5
     min_volume: float = 50_000.0
     precision: int = 4
+    backend: StepBackend | None = field(default=None, repr=False)
 
     def tessellate(self, step_path: str | Path) -> Tuple[List[List[float]], List[List[int]]]:
         """Return tessellated vertices and faces for ``step_path``."""
 
-        backend = self._require_backend()
+        backend = self._get_backend()
         path = Path(step_path)
-        assembly = backend.importers.importStep(str(path))
-        solids = list(assembly.solids())
+        solids = backend.load_solids(path)
         if not solids:
             raise RuntimeError(f"No solids were found inside {path!s}.")
 
@@ -478,27 +475,28 @@ class StepTessellator:
         if not selected:
             selected = solids
 
-        compound = backend.Compound.makeCompound(selected)
-        vectors, faces = compound.tessellate(self.angular_tolerance, self.linear_tolerance)
+        compound = backend.make_compound(selected)
+        raw_vertices, faces = backend.tessellate(
+            compound,
+            self.angular_tolerance,
+            self.linear_tolerance,
+        )
 
         vertices = [
             [
-                round(vector.x, self.precision),
-                round(vector.y, self.precision),
-                round(vector.z, self.precision),
+                round(coords[0], self.precision),
+                round(coords[1], self.precision),
+                round(coords[2], self.precision),
             ]
-            for vector in vectors
+            for coords in raw_vertices
         ]
         face_indices = [list(face) for face in faces]
         return vertices, face_indices
 
-    @staticmethod
-    def _require_backend():
-        if _cadquery is None:  # pragma: no cover - exercised when dependency missing
-            raise ModuleNotFoundError(
-                "cadquery is required to convert STEP files. Install it via 'pip install cadquery'."
-            )
-        return _cadquery
+    def _get_backend(self) -> StepBackend:
+        if self.backend is None:
+            self.backend = StepBackend()
+        return self.backend
 
 
 __all__ = [

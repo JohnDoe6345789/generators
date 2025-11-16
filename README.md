@@ -56,21 +56,20 @@ terminal.
 ## SimplyRetro D8 OpenSCAD generator
 
 The `src/generators/simplyretro_d8_generator.py` module reads
-`assets/simplyRetro D8.step`, tessellates the mesh with
-[`cadquery`](https://cadquery.readthedocs.io/), and emits OpenSCAD code using
-the shared framework that powers the jigsaw and teapot generators. Install
-CadQuery and export the die with:
+`assets/simplyRetro D8.step`, tessellates the mesh via the in-house
+OpenCascade backend, and emits OpenSCAD code using the shared framework that
+powers the jigsaw and teapot generators. Install the optional OpenCascade
+bindings and export the die with:
 
 ```bash
-pip install cadquery
+pip install OCP
 PYTHONPATH=src python -m generators.simplyretro_d8_generator --output simplyretro_d8.scad
 ```
 
-CadQuery is optional for most workflows and is no longer installed through
-``requirements.txt``. The OpenSCAD framework now embeds the light-weight
-vector helpers that originated in
-[CadQuery/cadquery](https://github.com/CadQuery/cadquery) so the remaining
-generators and tests can run without the heavy dependency.
+The OpenCascade dependency is optional for most workflows and is no longer
+installed through ``requirements.txt``. The OpenSCAD framework now embeds the
+vector helpers it needs so the remaining generators and tests can run without
+any heavy geometry packages.
 
 Advanced options (minimum volume, angular/linear tolerances, and module name)
 are exposed as CLI flags so the tessellation quality can be tuned for different
@@ -92,3 +91,8 @@ python -m unittest discover -s tests
 
 Before submitting patches, review ``docs/STYLE.md`` for formatting expectations
 and include the output of any validation commands in your change notes.
+
+## Credits
+
+The STEP tessellation helpers were inspired by the excellent
+[CadQuery](https://github.com/CadQuery/cadquery) project.

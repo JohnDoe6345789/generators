@@ -6,12 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple
 
-from generators.openscad_framework import OpenSCAD, OpenSCADScript
-
-try:  # pragma: no cover - optional dependency
-    import cadquery as cq
-except ImportError:  # pragma: no cover - handled at runtime
-    cq = None  # type: ignore[assignment]
+from generators.openscad_framework import OpenSCAD, OpenSCADScript, StepTessellator
 
 
 @dataclass(slots=True)
@@ -64,42 +59,13 @@ class SimplyRetroD8Generator:
         return path
 
     def _build_polyhedron_data(self) -> Tuple[List[List[float]], List[List[int]]]:
-        backend = self._require_cadquery()
-        assembly = backend.importers.importStep(str(self.step_path))
-        solids = list(assembly.solids())
-        if not solids:
-            raise RuntimeError(
-                f"No solids were found inside {self.step_path!s}."
-            )
-
-        selected = [solid for solid in solids if solid.Volume() >= self.settings.min_volume]
-        if not selected:
-            selected = solids
-
-        compound = backend.Compound.makeCompound(selected)
-        vectors, faces = compound.tessellate(
-            self.settings.angular_tolerance,
-            self.settings.linear_tolerance,
+        tessellator = StepTessellator(
+            angular_tolerance=self.settings.angular_tolerance,
+            linear_tolerance=self.settings.linear_tolerance,
+            min_volume=self.settings.min_volume,
+            precision=self.settings.precision,
         )
-
-        vertices = [
-            [
-                round(vector.x, self.settings.precision),
-                round(vector.y, self.settings.precision),
-                round(vector.z, self.settings.precision),
-            ]
-            for vector in vectors
-        ]
-        face_indices = [list(face) for face in faces]
-        return vertices, face_indices
-
-    @staticmethod
-    def _require_cadquery():
-        if cq is None:  # pragma: no cover - exercised when dependency missing
-            raise ModuleNotFoundError(
-                "cadquery is required to convert the STEP file. Install it via 'pip install cadquery'."
-            )
-        return cq
+        return tessellator.tessellate(self.step_path)
 
 
 def _build_arg_parser() -> "argparse.ArgumentParser":  # pragma: no cover - CLI glue

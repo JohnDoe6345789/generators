@@ -18,6 +18,21 @@ patches/     – Historical diffs or scaffolding assets.
 tests/       – Unit tests that exercise the Python generators.
 ```
 
+## Quick setup and helper scripts
+
+Use the provided shell or batch scripts to get started without hunting for the
+right commands:
+
+```bash
+./setup.sh          # Create .venv and install requirements on macOS/Linux
+./run.sh tests      # Run pytest with src/ on PYTHONPATH
+./run.sh generator  # Execute the SimplyRetro D8 generator
+```
+
+On Windows, run the matching `.bat` files (`setup.bat` / `run.bat`). All helper
+scripts automatically activate the virtual environment, upgrade `pip`, and keep
+`src/` on the module search path so the generators can be launched directly.
+
 ## SimplyRetro D8 OpenSCAD generator
 
 The `src/generators/simplyretro_d8_generator.py` module reads

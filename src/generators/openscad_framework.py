@@ -467,7 +467,12 @@ class StepTessellator:
 
         backend = self._get_backend()
         path = Path(step_path)
-        solids = backend.load_solids(path)
+        # ``Path`` renders with platform-specific separators which causes tests that
+        # assert on the provided string to fail under Windows.  Always forward the
+        # POSIX representation to the backend so the import path remains stable
+        # regardless of the host operating system.
+        imported_path = path.as_posix()
+        solids = backend.load_solids(imported_path)
         if not solids:
             raise RuntimeError(f"No solids were found inside {path!s}.")
 

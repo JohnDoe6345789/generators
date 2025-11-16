@@ -318,6 +318,11 @@ class TestJigsawBoardGenerator(unittest.TestCase):
         self.assertIn('color("green")', scad)
         self.assertIn('color("blue")', scad)
         self.assertIn('color("yellow")', scad)
+
+        # Modules and helper functions keep the SCAD organized
+        self.assertIn('module tile_a()', scad)
+        self.assertIn('module layout_tiles()', scad)
+        self.assertIn('function layout_offset', scad)
         
         # Check for geometric operations
         self.assertIn("union()", scad)
@@ -344,11 +349,10 @@ class TestJigsawBoardGenerator(unittest.TestCase):
         self.gen.find_safe_tab_positions(num_tabs_per_seam=2)
         scad = self.gen.generate_scad()
         
-        # Check for bed spacing in translations (without spaces in coordinates)
-        spacing = self.gen.bed_spacing
-        self.assertIn(f"translate([{spacing},0,0])", scad)
-        self.assertIn(f"translate([0,{spacing},0])", scad)
-        self.assertIn(f"translate([{spacing},{spacing},0])", scad)
+        # Check for the layout helper that spaces each tile on the print bed
+        self.assertIn('translate(layout_offset(1, 0))', scad)
+        self.assertIn('translate(layout_offset(0, 1))', scad)
+        self.assertIn('translate(layout_offset(1, 1))', scad)
     
     def test_holes_generated_for_tiles(self):
         """Test that mounting holes are included in output."""

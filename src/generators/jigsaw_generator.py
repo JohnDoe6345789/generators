@@ -1,18 +1,25 @@
 #!/usr/bin/env python3
-"""
-Generate OpenSCAD code for splitting a board with mounting holes into jigsaw tiles.
-Uses the OpenSCAD Python framework for clean, programmatic generation.
-"""
+"""Generate OpenSCAD code for a modular jigsaw-style board split."""
 
+from dataclasses import dataclass
 import logging
 from typing import List, Tuple
 
-from .openscad_framework import GeometryMath, OpenSCAD, beautify_scad_code
+from generators.openscad_framework import GeometryMath, OpenSCAD, beautify_scad_code
 
 
 logger = logging.getLogger(__name__)
 
 __all__ = ["JigsawBoardGenerator", "OpenSCAD", "GeometryMath", "beautify_scad_code"]
+
+
+@dataclass(frozen=True)
+class TilePlacement:
+    """Container describing a tile geometry and its layout offset."""
+
+    name: str
+    geometry: OpenSCAD
+    offset: Tuple[int, int]
 
 
 class JigsawBoardGenerator:
@@ -263,8 +270,8 @@ class JigsawBoardGenerator:
         
         return tile.color(color)
     
-    def generate_tiles(self) -> OpenSCAD:
-        """Generate all four tiles in a spaced layout."""
+    def generate_tiles(self) -> List[TilePlacement]:
+        """Generate the four tiles and describe their layout offsets."""
         self._ensure_safe_seams()
         if not self.vert_tab_y or not self.horz_tab_x:
             self.find_safe_tab_positions()
@@ -278,47 +285,84 @@ class JigsawBoardGenerator:
         # Tile A: bottom-left
         # - Right edge (x=mid_x): male tabs sticking right into B
         # - Top edge (y=mid_y): male tabs sticking up into C
-        tile_a = self._create_tile(0, 0, self.mid_x, self.mid_y, 
+        tile_a = self._create_tile(0, 0, self.mid_x, self.mid_y,
                                    vert_male=True, horz_male=True, color="red")
-        
-        # Tile B: bottom-right  
+
+        # Tile B: bottom-right
         # - Left edge (x=mid_x): female pockets receiving from A
         # - Top edge (y=mid_y): male tabs sticking up into D
         tile_b = self._create_tile(self.mid_x, 0, self.board_w, self.mid_y,
                                    vert_male=False, horz_male=True, color="green")
-        tile_b = tile_b.translate([self.bed_spacing, 0, 0])
         
         # Tile C: top-left
         # - Right edge (x=mid_x): male tabs sticking right into D
         # - Bottom edge (y=mid_y): female pockets receiving from A
         tile_c = self._create_tile(0, self.mid_y, self.mid_x, self.board_h,
                                    vert_male=True, horz_male=False, color="blue")
-        tile_c = tile_c.translate([0, self.bed_spacing, 0])
         
         # Tile D: top-right
         # - Left edge (x=mid_x): female pockets receiving from C
         # - Bottom edge (y=mid_y): female pockets receiving from B
         tile_d = self._create_tile(self.mid_x, self.mid_y, self.board_w, self.board_h,
                                    vert_male=False, horz_male=False, color="yellow")
-        tile_d = tile_d.translate([self.bed_spacing, self.bed_spacing, 0])
-        
-        return tile_a + tile_b + tile_c + tile_d
+
+        return [
+            TilePlacement("tile_a", tile_a, (0, 0)),
+            TilePlacement("tile_b", tile_b, (1, 0)),
+            TilePlacement("tile_c", tile_c, (0, 1)),
+            TilePlacement("tile_d", tile_d, (1, 1)),
+        ]
     
     def generate_scad(self) -> str:
-        """Generate the complete OpenSCAD code with header comments."""
+        """Generate the OpenSCAD file using reusable modules and functions."""
         if not self.vert_tab_y or not self.horz_tab_x:
             self.find_safe_tab_positions()
-        
+
         header = f"""// Auto-generated jigsaw board split
 // Board: {self.board_w} x {self.board_h} x {self.board_t} mm
 // Generated with {len(self.holes)} mounting holes
 // Vertical tabs at Y: {[f"{y:.1f}" for y in self.vert_tab_y]}
 // Horizontal tabs at X: {[f"{x:.1f}" for x in self.horz_tab_x]}
-
 """
-        
+
         tiles = self.generate_tiles()
-        return header + beautify_scad_code(str(tiles))
+        module_definitions = [
+            f"module {tile.name}() {{\n{tile.geometry}\n}}" for tile in tiles
+        ]
+
+        layout_calls = [self._format_layout_call(tile) for tile in tiles]
+        layout_module = "module layout_tiles() {\n" + "\n".join(layout_calls) + "\n}"
+
+        sections = [
+            header.strip(),
+            self._scad_functions_block(),
+            "\n\n".join(module_definitions),
+            layout_module,
+            "layout_tiles();",
+        ]
+
+        scad_text = "\n\n".join(filter(None, sections))
+        return beautify_scad_code(scad_text)
+
+    def _scad_functions_block(self) -> str:
+        """Return helper OpenSCAD functions used throughout the file."""
+
+        return "\n".join([
+            f"function bed_spacing() = {self.bed_spacing};",
+            "function layout_offset(x_mult, y_mult, z_offset=0) = "
+            "[x_mult * bed_spacing(), y_mult * bed_spacing(), z_offset];",
+        ])
+
+    @staticmethod
+    def _format_layout_call(tile: TilePlacement) -> str:
+        """Return the SCAD snippet that positions a tile module."""
+
+        x_mult, y_mult = tile.offset
+        return (
+            f"translate(layout_offset({x_mult}, {y_mult})) {{\n"
+            f"    {tile.name}();\n"
+            f"}}"
+        )
 
     def _validate_holes_clear_of_seams(self) -> None:
         """Ensure no mounting hole is bisected by either seam."""

@@ -43,7 +43,10 @@ it directly with `python -m gui.workflow_launcher` if desired. The launcher
 exposes buttons for setting up the environment, running the pytest suite,
 launching the SimplyRetro generator, and invoking any helper script listed in
 the `scripts/` directory. Command output is streamed into the GUI so you can
-monitor progress without leaving the window.
+monitor progress without leaving the window. When a script ships with a
+`Usage:` section, the launcher parses its positional parameters and renders
+matching input fields so you can pass different arguments without touching the
+terminal.
 
 > **Homebrew tip:** Recent macOS installs sometimes end up with both `/usr/bin`
 > and Homebrew versions of Python. Use `scripts/set_default_python.sh` to append

@@ -13,9 +13,13 @@ Generates ./win-netpanel-launcher with:
   - requirements.txt, README.md, tests/test_smoke.py
 """
 from __future__ import annotations
+import logging
 from pathlib import Path
 
 ROOT = Path("win-netpanel-launcher")
+
+
+logger = logging.getLogger(__name__)
 
 
 def _p(*parts: str) -> Path:
@@ -25,7 +29,7 @@ def _p(*parts: str) -> Path:
 def _w(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
-    print(f"✓ Wrote {path}")
+    logger.info("Wrote %s", path)
 
 
 # ----------------------------- File contents ------------------------------ #
@@ -58,12 +62,14 @@ SVG_ICON = """<?xml version='1.0' encoding='UTF-8'?>
 
 MAIN_SCRIPT = """# -*- coding: utf-8 -*-
 from __future__ import annotations
-import os, sys, ctypes
+import os, sys, ctypes, logging
 from pathlib import Path
 from typing import Callable, List, Tuple
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (QApplication, QLabel, QMainWindow, QMessageBox, QPushButton, QVBoxLayout, QWidget, QGridLayout, QMenuBar, QGraphicsDropShadowEffect)
+
+logger = logging.getLogger(__name__)
 
 def is_windows() -> bool: return os.name == 'nt'
 
@@ -144,7 +150,10 @@ class MainWindow(QMainWindow):
         self.setMenuBar(bar)
 
 def main() -> int:
-    if not is_windows(): print('Windows only.'); return 1
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+    if not is_windows():
+        logger.error('Windows only.')
+        return 1
     app = QApplication(sys.argv); apply_theme(app, True)
     win = MainWindow(); win.show(); return app.exec()
 
@@ -258,4 +267,5 @@ def main() -> None:
 
 
 if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     main()

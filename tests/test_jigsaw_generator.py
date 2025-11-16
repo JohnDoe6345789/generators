@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shutil
@@ -20,6 +21,9 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from generators.jigsaw_generator import JigsawBoardGenerator
+
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_FULL_BOARD_HOLES: List[List[float]] = [
@@ -807,7 +811,7 @@ class TestEndToEndExecution(unittest.TestCase):
 
 
 def run_tests():
-    """Run all tests and print results."""
+    """Run all tests and log summarized results."""
     # Create test suite
     loader = unittest.TestLoader()
     suite = unittest.TestSuite()
@@ -821,17 +825,22 @@ def run_tests():
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)
     
-    # Print summary
-    print("\n" + "="*70)
-    print(f"Tests run: {result.testsRun}")
-    print(f"Successes: {result.testsRun - len(result.failures) - len(result.errors)}")
-    print(f"Failures: {len(result.failures)}")
-    print(f"Errors: {len(result.errors)}")
-    print("="*70)
+    # Log summary
+    separator = "=" * 70
+    logger.info(separator)
+    logger.info("Tests run: %d", result.testsRun)
+    logger.info(
+        "Successes: %d",
+        result.testsRun - len(result.failures) - len(result.errors),
+    )
+    logger.info("Failures: %d", len(result.failures))
+    logger.info("Errors: %d", len(result.errors))
+    logger.info(separator)
     
     return result.wasSuccessful()
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     success = run_tests()
     exit(0 if success else 1)

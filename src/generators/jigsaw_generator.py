@@ -4,7 +4,11 @@ Generate OpenSCAD code for splitting a board with mounting holes into jigsaw til
 Uses the OpenSCAD Python framework for clean, programmatic generation.
 """
 
+import logging
 from typing import List, Tuple
+
+
+logger = logging.getLogger(__name__)
 
 # Embedded OpenSCAD framework
 class OpenSCAD:
@@ -484,13 +488,14 @@ class JigsawBoardGenerator:
         """Save the generated OpenSCAD code to a file."""
         with open(filename, 'w') as f:
             f.write(self.generate_scad())
-        print(f"Generated OpenSCAD file: {filename}")
-        print(f"  - Vertical tabs: {len(self.vert_tab_y)}")
-        print(f"  - Horizontal tabs: {len(self.horz_tab_x)}")
+        logger.info("Generated OpenSCAD file: %s", filename)
+        logger.info("Vertical tabs: %d", len(self.vert_tab_y))
+        logger.info("Horizontal tabs: %d", len(self.horz_tab_x))
 
 
 # Example usage
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     # microATX board dimensions
     board_width = 243.84
     board_height = 243.84
@@ -526,7 +531,11 @@ if __name__ == "__main__":
         num_tabs_per_seam=4,
         min_distance_from_corner=40.0
     )
-    print(f"Auto-found {num_vert} vertical tabs and {num_horz} horizontal tabs")
+    logger.info(
+        "Auto-found %d vertical tabs and %d horizontal tabs",
+        num_vert,
+        num_horz,
+    )
     
     # Adjust jigsaw parameters for fit
     gen.peg_len = 14.0

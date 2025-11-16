@@ -139,9 +139,11 @@ class JigsawBoardGenerator:
         self.peg_radius = 9.0    # Rounded knob radius
         self.clearance = 0.50    # Extra clearance for female cuts
         
-        # Calculate midpoints
+        # Calculate seam locations (default to geometric midpoints).  These may
+        # be nudged slightly to avoid bisecting mounting holes.
         self.mid_x = board_width / 2
         self.mid_y = board_height / 2
+        self._seams_locked = False
         
         # Tab positions
         self.vert_tab_y = []
@@ -161,6 +163,8 @@ class JigsawBoardGenerator:
             min_distance_from_hole: Minimum distance from any hole center
             min_distance_from_corner: Minimum distance from board corners
         """
+        self._ensure_safe_seams()
+
         # Find vertical tab positions (along y-axis at x = mid_x)
         y_candidates = []
         y_min = min_distance_from_corner
@@ -244,22 +248,38 @@ class JigsawBoardGenerator:
     def _create_vert_male_tab(self, y_mid: float) -> OpenSCAD:
         """Create a vertical male tab at the given Y position."""
         profile = self._create_male_profile_2d()
-        return profile.linear_extrude(height=self.board_t).translate([self.mid_x, y_mid - self.peg_width/2, 0])
+        return profile.linear_extrude(height=self.board_t).translate([
+            self.mid_x,
+            y_mid - self.peg_width/2,
+            0,
+        ])
     
     def _create_vert_female_pocket(self, y_mid: float) -> OpenSCAD:
         """Create a vertical female pocket at the given Y position."""
         profile = self._create_female_profile_2d()
-        return profile.linear_extrude(height=self.board_t + 2).translate([self.mid_x, y_mid - self.peg_width/2 - self.clearance, -1])
+        return profile.linear_extrude(height=self.board_t + 2).translate([
+            self.mid_x,
+            y_mid - self.peg_width/2 - self.clearance,
+            -1,
+        ])
     
     def _create_horz_male_tab(self, x_mid: float) -> OpenSCAD:
         """Create a horizontal male tab at the given X position."""
         profile = self._create_male_profile_2d()
-        return profile.linear_extrude(height=self.board_t).rotate([0, 0, 90]).translate([x_mid - self.peg_width/2, self.mid_y, 0])
+        return profile.linear_extrude(height=self.board_t).rotate([0, 0, 90]).translate([
+            x_mid - self.peg_width/2,
+            self.mid_y,
+            0,
+        ])
     
     def _create_horz_female_pocket(self, x_mid: float) -> OpenSCAD:
         """Create a horizontal female pocket at the given X position."""
         profile = self._create_female_profile_2d()
-        return profile.linear_extrude(height=self.board_t + 2).rotate([0, 0, 90]).translate([x_mid - self.peg_width/2 - self.clearance, self.mid_y, -1])
+        return profile.linear_extrude(height=self.board_t + 2).rotate([0, 0, 90]).translate([
+            x_mid - self.peg_width/2 - self.clearance,
+            self.mid_y,
+            -1,
+        ])
     
     def _create_holes_for_tile(self, x1: float, y1: float, x2: float, y2: float) -> List[OpenSCAD]:
         """Create hole cylinders for a specific tile."""
@@ -340,6 +360,7 @@ class JigsawBoardGenerator:
     
     def generate_tiles(self) -> OpenSCAD:
         """Generate all four tiles in a spaced layout."""
+        self._ensure_safe_seams()
         if not self.vert_tab_y or not self.horz_tab_x:
             self.find_safe_tab_positions()
 
@@ -396,6 +417,7 @@ class JigsawBoardGenerator:
 
     def _validate_holes_clear_of_seams(self) -> None:
         """Ensure no mounting hole is bisected by either seam."""
+        self._ensure_safe_seams()
 
         conflicts = []
         tolerance = 1e-6
@@ -415,6 +437,48 @@ class JigsawBoardGenerator:
                 "across tiles: " + "; ".join(conflicts)
             )
             raise ValueError(message)
+
+    def _ensure_safe_seams(self) -> None:
+        """Shift seam positions away from mounting holes if necessary."""
+
+        if getattr(self, "_seams_locked", False):
+            return
+
+        self.mid_x = self._find_safe_seam_position(self.mid_x, axis="x")
+        self.mid_y = self._find_safe_seam_position(self.mid_y, axis="y")
+        self._seams_locked = True
+
+    def _find_safe_seam_position(self, start: float, axis: str) -> float:
+        """Return the closest seam location to ``start`` that avoids holes."""
+
+        axis_length = self.board_w if axis == "x" else self.board_h
+        coord_index = 0 if axis == "x" else 1
+        clearance = self.hole_r + 0.25
+        search_step = 0.5
+        max_steps = int((axis_length / 2) / search_step) + 2
+
+        def seam_is_clear(candidate: float) -> bool:
+            if not (clearance < candidate < axis_length - clearance):
+                return False
+            for hole in self.holes:
+                if abs(hole[coord_index] - candidate) <= clearance:
+                    return False
+            return True
+
+        offsets = [0.0]
+        for step in range(1, max_steps):
+            offsets.append(step * search_step)
+            offsets.append(-step * search_step)
+
+        for offset in offsets:
+            candidate = start + offset
+            if seam_is_clear(candidate):
+                return candidate
+
+        seam_name = "vertical" if axis == "x" else "horizontal"
+        raise ValueError(
+            f"Unable to place a safe {seam_name} seam; all candidate positions intersect mounting holes."
+        )
     
     def save_scad(self, filename: str):
         """Save the generated OpenSCAD code to a file."""

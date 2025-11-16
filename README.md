@@ -27,11 +27,20 @@ right commands:
 ./setup.sh          # Create .venv and install requirements on macOS/Linux
 ./run.sh tests      # Run pytest with src/ on PYTHONPATH
 ./run.sh generator  # Execute the SimplyRetro D8 generator
+PYTHONPATH=src python -m gui.workflow_launcher  # Launch the Tk control center
 ```
 
 On Windows, run the matching `.bat` files (`setup.bat` / `run.bat`). All helper
 scripts automatically activate the virtual environment, upgrade `pip`, and keep
 `src/` on the module search path so the generators can be launched directly.
+
+### Tk workflow launcher
+
+Run `python -m gui.workflow_launcher` (ensure `src/` is on `PYTHONPATH`) to open
+the Tkinter-based control center. It exposes buttons for setting up the
+environment, running the pytest suite, launching the SimplyRetro generator, and
+invoking any helper script listed in the `scripts/` directory. Command output is
+streamed into the GUI so you can monitor progress without leaving the window.
 
 ## SimplyRetro D8 OpenSCAD generator
 

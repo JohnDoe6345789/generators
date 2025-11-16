@@ -2,17 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from math import isclose
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence, Tuple
-
-try:  # pragma: no cover - import guard
-    from steputils.p21 import Enumeration, Reference, load
-except ModuleNotFoundError as exc:  # pragma: no cover - explicit error path
-    raise ModuleNotFoundError(
-        "STEP tessellation requires the 'steputils' package. Install it via 'pip install steputils'."
-    ) from exc
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 Point = Tuple[float, float, float]
 Triangle = Tuple[Point, Point, Point]
@@ -84,15 +78,7 @@ class _StepModel:
     @classmethod
     def from_file(cls, step_path: str | Path) -> "_StepModel":
         path = Path(step_path)
-        with path.open("r", encoding="utf-8", errors="ignore") as stream:
-            step_file = load(stream)
-        entities: Dict[str, _Entity] = {}
-        for section in step_file.data:
-            for ref, instance in getattr(section, "instances", {}).items():
-                entity = getattr(instance, "entity", None)
-                if entity is None:
-                    continue
-                entities[ref] = entity
+        entities = _load_step_entities(path)
         return cls(entities)
 
     def iter_solids(self) -> Iterable[StepSolid]:
@@ -178,7 +164,7 @@ class _StepModel:
             start, end = end, start
         return start, end
 
-    def _vertex_coords(self, vertex_ref: str | Reference) -> Point:
+    def _vertex_coords(self, vertex_ref: object) -> Point:
         vertex = self._entity(_as_reference(vertex_ref))
         if vertex.name != "VERTEX_POINT":
             return (0.0, 0.0, 0.0)
@@ -238,8 +224,6 @@ def _points_close(a: Point, b: Point, tol: float = 1e-6) -> bool:
 def _as_bool(value: object) -> bool:
     if isinstance(value, bool):
         return value
-    if isinstance(value, Enumeration):
-        value = str(value)
     if isinstance(value, str):
         text = value.strip().strip(".").lower()
         if text == "t":
@@ -250,8 +234,6 @@ def _as_bool(value: object) -> bool:
 
 
 def _as_reference(value: object) -> str:
-    if isinstance(value, Reference):
-        return str(value)
     if isinstance(value, str):
         return value
     raise TypeError(f"Unsupported reference type: {type(value)!r}")
@@ -266,7 +248,213 @@ def _as_references(value: object) -> List[str]:
         return [_as_reference(value)]
 
 
-_Entity = object  # Alias for readability; steputils does not expose a stub type.
+@dataclass(slots=True)
+class _Entity:
+    """Representation of a STEP entity declaration."""
+
+    name: str
+    params: List[object]
+
+
+def _load_step_entities(path: Path) -> Dict[str, _Entity]:
+    """Load and parse STEP entities from the provided file path."""
+
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    return _parse_step_data(text)
+
+
+def _parse_step_data(text: str) -> Dict[str, _Entity]:
+    """Parse all DATA sections of a STEP file into entity mappings."""
+
+    cleaned = _COMMENT_RE.sub(" ", text)
+    upper = cleaned.upper()
+    sections: List[str] = []
+    start = 0
+    while True:
+        data_idx = upper.find("DATA;", start)
+        if data_idx == -1:
+            break
+        data_idx += len("DATA;")
+        end_idx = upper.find("ENDSEC;", data_idx)
+        if end_idx == -1:
+            body = cleaned[data_idx:]
+            start = len(cleaned)
+        else:
+            body = cleaned[data_idx:end_idx]
+            start = end_idx + len("ENDSEC;")
+        sections.append(body)
+
+    entities: Dict[str, _Entity] = {}
+    for section in sections:
+        for statement in _split_statements(section):
+            parsed = _parse_entity(statement)
+            if parsed is None:
+                continue
+            ref, entity = parsed
+            entities[ref] = entity
+    return entities
+
+
+def _split_statements(section: str) -> Iterable[str]:
+    """Yield STEP statements separated by top-level semicolons."""
+
+    statements: List[str] = []
+    depth = 0
+    in_string = False
+    start = 0
+    idx = 0
+    length = len(section)
+    while idx < length:
+        char = section[idx]
+        if char == "'":
+            if in_string and idx + 1 < length and section[idx + 1] == "'":
+                idx += 2
+                continue
+            in_string = not in_string
+            idx += 1
+            continue
+        if in_string:
+            idx += 1
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")" and depth:
+            depth -= 1
+        elif char == ";" and depth == 0:
+            statement = section[start:idx].strip()
+            if statement:
+                statements.append(statement)
+            start = idx + 1
+        idx += 1
+    return statements
+
+
+def _parse_entity(statement: str) -> Optional[Tuple[str, _Entity]]:
+    """Parse a single entity assignment line."""
+
+    if not statement.startswith("#"):
+        return None
+    eq_index = statement.find("=")
+    if eq_index == -1:
+        return None
+    ref = statement[:eq_index].strip()
+    body = statement[eq_index + 1 :].strip()
+    paren_index = body.find("(")
+    if paren_index == -1 or not body.endswith(")"):
+        return None
+    name = body[:paren_index].strip().upper()
+    params_text = body[paren_index + 1 : -1]
+    params = _parse_parameter_list(params_text)
+    return ref, _Entity(name=name, params=params)
+
+
+def _parse_parameter_list(text: str) -> List[object]:
+    """Parse a comma-delimited parameter list."""
+
+    params: List[object] = []
+    idx = 0
+    length = len(text)
+    while True:
+        idx = _skip_ws(text, idx)
+        if idx >= length:
+            break
+        value, idx = _parse_value(text, idx)
+        params.append(value)
+        idx = _skip_ws(text, idx)
+        if idx < length and text[idx] == ",":
+            idx += 1
+            continue
+        break
+    return params
+
+
+def _parse_value(text: str, idx: int) -> Tuple[object, int]:
+    """Parse a single STEP value and return the new cursor index."""
+
+    idx = _skip_ws(text, idx)
+    if idx >= len(text):
+        return "", idx
+    char = text[idx]
+    if char == "(":
+        items: List[object] = []
+        idx += 1
+        while True:
+            idx = _skip_ws(text, idx)
+            if idx >= len(text):
+                break
+            if text[idx] == ")":
+                idx += 1
+                break
+            item, idx = _parse_value(text, idx)
+            items.append(item)
+            idx = _skip_ws(text, idx)
+            if idx < len(text) and text[idx] == ",":
+                idx += 1
+                continue
+            if idx < len(text) and text[idx] == ")":
+                idx += 1
+                break
+        return items, idx
+    if char == "'":
+        idx += 1
+        buffer: List[str] = []
+        while idx < len(text):
+            current = text[idx]
+            if current == "'":
+                if idx + 1 < len(text) and text[idx + 1] == "'":
+                    buffer.append("'")
+                    idx += 2
+                    continue
+                idx += 1
+                break
+            buffer.append(current)
+            idx += 1
+        return "".join(buffer), idx
+    if char == "#":
+        idx += 1
+        start = idx
+        while idx < len(text) and text[idx].isdigit():
+            idx += 1
+        return f"#{text[start:idx]}", idx
+    if char == ".":
+        idx += 1
+        start = idx
+        while idx < len(text) and text[idx] != ".":
+            idx += 1
+        enum_value = text[start:idx].upper()
+        if idx < len(text) and text[idx] == ".":
+            idx += 1
+        return enum_value, idx
+    if char in "+-" or char.isdigit() or char == ".":
+        match = _NUMBER_RE.match(text, idx)
+        if match:
+            number = match.group(0).replace("d", "e").replace("D", "E")
+            idx = match.end()
+            return float(number), idx
+    if char == "$" or char == "*":
+        return None, idx + 1
+    match = _IDENTIFIER_RE.match(text, idx)
+    if match:
+        word = match.group(0)
+        idx = match.end()
+        upper = word.upper()
+        if upper == "TRUE":
+            return True, idx
+        if upper == "FALSE":
+            return False, idx
+        return upper, idx
+    return "", idx + 1
+
+
+def _skip_ws(text: str, idx: int) -> int:
+    while idx < len(text) and text[idx].isspace():
+        idx += 1
+    return idx
+
+
+_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
+_NUMBER_RE = re.compile(r"[+-]?(?:\d+\.\d*|\d*\.\d+|\d+)(?:[EeDd][+-]?\d+)?")
+_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_\-]*")
 
 
 __all__ = ["StepBackend", "StepSolid"]

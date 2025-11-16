@@ -56,20 +56,22 @@ terminal.
 ## SimplyRetro D8 OpenSCAD generator
 
 The `src/generators/simplyretro_d8_generator.py` module reads
-`assets/simplyRetro D8.step`, tessellates the mesh via the in-house
-OpenCascade backend, and emits OpenSCAD code using the shared framework that
-powers the jigsaw and teapot generators. Install the optional OpenCascade
-bindings and export the die with:
+`assets/simplyRetro D8.step`, tessellates the mesh via a pure-Python STEP
+backend, and emits OpenSCAD code using the shared framework that powers the
+jigsaw and teapot generators. The backend translates the relevant OpenCascade
+(OCCT) shell-walking routines into Python and leans on
+[`steputils`](https://pypi.org/project/steputils/) for the ISO-10303 parser so
+no compiled dependencies are required at runtime:
 
 ```bash
-pip install OCP
+pip install -r requirements.txt
 PYTHONPATH=src python -m generators.simplyretro_d8_generator --output simplyretro_d8.scad
 ```
 
-The OpenCascade dependency is optional for most workflows and is no longer
-installed through ``requirements.txt``. The OpenSCAD framework now embeds the
-vector helpers it needs so the remaining generators and tests can run without
-any heavy geometry packages.
+Because the tessellator now lives entirely inside this repository it is always
+available in virtual environments created via ``setup.sh`` or ``setup.bat`` and
+the OpenSCAD framework no longer needs to guard against missing Python bindings
+for OCCT.
 
 Advanced options (minimum volume, angular/linear tolerances, and module name)
 are exposed as CLI flags so the tessellation quality can be tuned for different
@@ -95,4 +97,7 @@ and include the output of any validation commands in your change notes.
 ## Credits
 
 The STEP tessellation helpers were inspired by the excellent
-[CadQuery](https://github.com/CadQuery/cadquery) project.
+[CadQuery](https://github.com/CadQuery/cadquery) project and borrow heavily
+from the algorithms published by [Open Cascade](https://www.opencascade.com/)
+within [OCCT](https://github.com/Open-Cascade-SAS/OCCT). Those routines were
+reimplemented in Python so this project can stay self-contained.
